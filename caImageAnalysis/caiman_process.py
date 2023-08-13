@@ -1,14 +1,14 @@
-import logging
-from fish import Fish
 import caiman as cm
-from utils import calculate_fps
 from caiman.source_extraction.cnmf import params as params
 from caiman.source_extraction.cnmf import cnmf as cnmf
 from caiman.motion_correction import MotionCorrect
-from caiman.utils.visualization import plot_contours
-from mesm import load_mesmerize
+import logging
 import numpy as np
 import pickle
+
+from caImageAnalysis import BrukerFish, VolumeFish
+from caImageAnalysis.mesm import load_mesmerize
+from caImageAnalysis.utils import calculate_fps
 
 
 def caiman_mcorr(fish, plane=None, **opts_dict):
@@ -68,11 +68,15 @@ def caiman_mcorr(fish, plane=None, **opts_dict):
     # restart cluster to clean up memory
     cm.stop_server(dview=dview)
 
-    with open(fish.data_paths['postgavage_path'].joinpath('opts.pkl'), 'wb') as fp:
+    with open(fish.exp_path.joinpath('opts.pkl'), 'wb') as fp:
         pickle.dump(opts_dict, fp)
 
-    fish.data_paths['opts'] = fish.data_paths['postgavage_path'].joinpath('opts.pkl')
-    fish.process_volumetric_filestructure()
+    fish.data_paths['opts'] = fish.exp_path.joinpath('opts.pkl')
+    
+    if isinstance(fish, VolumeFish):
+        fish.process_volumetric_filestructure()
+    elif isinstance(fish, BrukerFish):
+        fish.process_bruker_filestructure()
 
     return images
 
@@ -143,7 +147,7 @@ def caiman_cnmf(fish, plane=None, **opts_dict):
 
     cnm.estimates.evaluate_components(images, cnm.params, dview=dview)
 
-    with open(fish.data_paths['postgavage_path'].joinpath('opts.pkl'), 'wb') as fp:
+    with open(fish.exp_path.joinpath('opts.pkl'), 'wb') as fp:
         pickle.dump(_opts, fp)
 
     cm.stop_server(dview=dview)

@@ -6,7 +6,8 @@ import numpy as np
 import caiman as cm
 from tifffile import imread, imwrite, memmap
 from scipy.ndimage import rotate
-from utils import crop_image
+
+from caImageAnalysis.utils import crop_image
 
 
 class Fish:
@@ -14,28 +15,55 @@ class Fish:
     def __init__(self, folder_path):
         self.exp_path = Path(folder_path)
         self.bruker = False
+        self.data_paths = dict()
 
-        parsed = self.exp_path.name.split('_')
-        self.exp_date = parsed[-1]
-        self.fish_id = parsed[-2]
-        self.concentration = parsed[-3]
-        self.stimulus = parsed[-4]
-        self.feed = parsed[-5]
-        self.age = parsed[-6]
-        self.genotype = parsed[:-6]
-
+        self.parse_metadata()
         self.process_filestructure()
 
         if 'injection' in self.data_paths.keys():
             self.get_injection_dt()
 
+    def parse_metadata(self):
+        '''Parses metadata from the experiment folder name'''
+        parsed = self.exp_path.name.split('_')
+        self.exp_date = parsed.pop(-1)
+
+        try:
+            self.fish_id = int(parsed[-1])
+            parsed.pop(-1)
+        except ValueError:
+            pass
+
+        for i, item in enumerate(parsed):
+            if 'dpf' in item:
+                self.age = item[:item.find('dpf')]
+                parsed.pop(i)
+
+        for i, item in enumerate(parsed):
+            if 'fed' in item:
+                self.feed = item
+                parsed.pop(i)
+
+        for i, item in enumerate(parsed):
+            if 'mM' in item or 'uM' in item:
+                self.concentration = item
+                self.stimulus = parsed[i-1]
+                parsed.pop(i)
+                parsed.pop(i-1)
+
+        for i, item in enumerate(parsed):
+            if item == 'test':
+                parsed.pop(i)
+
+        self.genotype = parsed
+              
     def process_filestructure(self):
         '''Creates a data_paths attribute with the paths to different fies'''
-        self.data_paths = {}
         with os.scandir(self.exp_path) as entries:
             for entry in entries:
                 if os.path.isdir(entry.path) and entry.name.startswith('postgavage_'):
                     self.data_paths['postgavage_path'] = Path(entry.path)
+                    self.exp_path = Path(entry.path)
                 elif entry.name.startswith('log') and entry.name.endswith('.txt'):
                     self.data_paths['log'] = Path(entry.path)
                 elif entry.name == 'injection.txt':
@@ -48,6 +76,8 @@ class Fish:
                         self.data_paths['raw_image'] = Path(entry.path)
                     elif entry.name.endswith('_cropped.tif'):
                         self.data_paths['cropped'] = Path(entry.path)
+                    elif entry.name.endswith('raw_rotated.tif'):
+                        self.data_paths['rotated'] = Path(entry.path)
                     elif entry.name.startswith('postgavage_') and entry.name.endswith('ch1.txt'):
                         self.data_paths['frametimes'] = Path(entry.path)
                     elif entry.name.startswith('raw_flipped'):
@@ -90,25 +120,17 @@ class Fish:
         self.data_paths['cropped'] = img_path
         return cropped
 
-    def rotate_image(self, img_path, angle=0, prefix=None):
+    def rotate_image(self, img_path, angle=0):
         '''Rotates image by angle'''
-
         image = imread(img_path)
-
-        if prefix is not None:
-            rot_img_path = img_path.parent.joinpath(f"{prefix}_raw_rotated.tif")
-        else:
-            rot_img_path = img_path.parent.joinpath("raw_rotated.tif")
-
+    
+        rot_img_path = img_path.parent.joinpath("raw_rotated.tif")
         rotated_image = [rotate(img, angle=angle) for img in image]
         imwrite(
             rot_img_path, rotated_image, bigtiff=True
         )
-
-        if prefix is not None:
-            self.data_paths[prefix]['rotated'] = rot_img_path
-        else:
-            self.data_paths['rotated'] = rot_img_path
+        
+        self.data_paths['rotated'] = rot_img_path
 
     def flip_image(self):
         '''Flips the image horizontally'''

@@ -1,14 +1,12 @@
 from mesmerize_core import *
 import os
-from utils import *
-from fish import Fish
 import pandas as pd
 from itertools import product
 import numpy as np
 from copy import deepcopy
 from pathlib import Path
 from fastplotlib import ImageWidget, Plot
-from fastplotlib.graphics.line_slider import LineSlider
+from fastplotlib.graphics.selectors import LinearSelector
 from fastplotlib.graphics.text import TextGraphic
 from ipywidgets import FloatSlider, FloatText, Label, HBox, VBox, link, Layout
 from collections import OrderedDict
@@ -17,10 +15,13 @@ import matplotlib.pyplot as plt
 from math import ceil
 import pickle
 
+from caImageAnalysis.utils import *
+from caImageAnalysis.visualize import *
+
 
 def load_mesmerize(fish):
     '''Loads mesmerize-batch df'''
-    set_parent_raw_data_path(fish.data_paths['postgavage_path'])
+    set_parent_raw_data_path(fish.exp_path)
     batch_path = get_parent_raw_data_path().joinpath("mesmerize-batch/batch.pickle")
 
     if os.path.exists(batch_path):
@@ -352,7 +353,7 @@ def visualize_temporal(fish, row):
         plot_temporal.add_line(data=line, thickness=3, colors="red", name="injection")
 
         # a vertical line that is synchronized to the image widget "t" (timepoint) slider
-        _ls = LineSlider(x_pos=0, bounds=(temporal.min(), temporal.max()), slider=iw_cnmf.sliders["t"])
+        _ls = LinearSelector(x_pos=0, bounds=(temporal.min(), temporal.max()), slider=iw_cnmf.sliders["t"])
         plot_temporal.add_graphic(_ls)
 
         return plot_temporal, iw_cnmf
@@ -1052,7 +1053,7 @@ def save_temporal(fish):
                                 'roi_indices': roi_indices,
                                 'inj_frame': inj_frames})
     temporal_df.sort_values(by=['plane'], ignore_index=True, inplace=True)
-    temporal_df.to_hdf(fish.data_paths['postgavage_path'].joinpath('temporal.h5'), key='temporal')
+    temporal_df.to_hdf(fish.exp_path.joinpath('temporal.h5'), key='temporal')
 
 
 def plot_single_rois(row, indices):

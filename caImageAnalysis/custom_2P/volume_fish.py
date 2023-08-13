@@ -1,6 +1,6 @@
-from fish import *
-from mesm import load_mesmerize
-from utils import get_injection_frame
+from .fish import Fish
+from caImageAnalysis.mesm import load_mesmerize
+from caImageAnalysis.utils import get_injection_frame
 
 
 class VolumeFish(Fish):
@@ -36,7 +36,7 @@ class VolumeFish(Fish):
                 imwrite(new_img_path, sub_img)
                 print(f'saved {new_img_path}')
 
-                new_framet_path = folderpath.joinpath(f'frametimes.h5')
+                new_framet_path = folderpath.joinpath('frametimes.h5')
                 new_fts.to_hdf(new_framet_path, 'frametimes')
                 print(f'saved {new_framet_path}')
 
@@ -144,12 +144,12 @@ class VolumeFish(Fish):
 
     def process_volumetric_filestructure(self):
         '''Appends volumetric file paths to the data_paths'''
-        self.data_paths['volumes'] = {}
+        self.data_paths['volumes'] = dict()
         with os.scandir(self.data_paths['postgavage_path']) as entries:
             for entry in entries:
                 if entry.name.startswith('img_stack_'):
                     volume_ind = entry.name[entry.name.rfind('_')+1:]
-                    self.data_paths['volumes'][volume_ind] = {}
+                    self.data_paths['volumes'][volume_ind] = dict()
 
                     with os.scandir(entry.path) as subentries:
                         for sub in subentries:
