@@ -2,6 +2,7 @@ from pathlib import Path
 import os
 import pandas as pd
 from datetime import datetime as dt
+import matplotlib.pyplot as plt
 import numpy as np
 import caiman as cm
 from tifffile import imread, imwrite, memmap
@@ -132,6 +133,8 @@ class Fish:
         
         self.data_paths['rotated'] = rot_img_path
 
+        plt.imshow(rotated_image[0])
+
     def flip_image(self):
         '''Flips the image horizontally'''
         image = imread(self.data_paths["raw_image"])
@@ -154,3 +157,4 @@ class Fish:
         for i, row in frametimes.iterrows():
             frametimes.loc[i, 'injection'] = (row['time'] >= self.inj_time)
         return frametimes
+    
