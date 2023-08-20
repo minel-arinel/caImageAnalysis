@@ -8,6 +8,7 @@ import caiman as cm
 from tifffile import imread, imwrite, memmap
 from scipy.ndimage import rotate
 
+from caImageAnalysis.mesm import load_mesmerize
 from caImageAnalysis.utils import crop_image
 
 
@@ -16,6 +17,7 @@ class Fish:
     def __init__(self, folder_path):
         self.exp_path = Path(folder_path)
         self.bruker = False
+        self.volumetric = False
         self.data_paths = dict()
 
         self.parse_metadata()
@@ -96,6 +98,29 @@ class Fish:
                     elif entry.name == 'temporal.h5':
                         self.data_paths['temporal'] = Path(entry.path)
 
+    def process_mesmerize_filestructure(self):
+        '''TODO: mesmerize filestructure for non-volumetric images'''
+        '''Appends volumetric mesmerize uuid paths to the data_paths'''
+        if 'mesmerize' in self.data_paths.keys():
+            mes_df = load_mesmerize(self)
+            for i, row in mes_df.iterrows():
+                
+                if self.volumetric:
+                    if row.algo == 'mcorr':
+                        try:
+                            plane = row.item_name[row.item_name.rfind('_')+1:]
+                            mesm_path = self.data_paths['mesmerize']
+                            self.data_paths['volumes'][plane]['mcorr'] = self.data_paths['mesmerize'].joinpath(row.outputs['mcorr-output-path'])
+                        except:
+                            pass
+
+                    elif row.algo == 'cnmf':
+                        try:
+                            plane = row.item_name[row.item_name.rfind('_')+1:]
+                            self.data_paths['volumes'][plane]['cnmf'] = self.data_paths['mesmerize'].joinpath(row.outputs['cnmf-memmap-path'])
+                        except:
+                            pass
+    
     def raw_text_frametimes_to_df(self):
         '''Returns frametimes txt file as a dataframe'''
         if hasattr(self, "frametimes_df"):

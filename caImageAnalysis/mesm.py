@@ -600,8 +600,8 @@ def visualize_diff(df):
         subtract_means[i] = lambda x: x - means[i]
     iw.frame_apply = subtract_means
 
-    for sp in iw.plot:
-        sp.graphics[0].cmap = "jet"
+    for subplot in iw.gridplot:
+        subplot.graphics[0].cmap = "jet"
 
     return iw
 

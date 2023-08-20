@@ -17,7 +17,6 @@ class BrukerFish(Fish):
         super().__init__(folder_path)
 
         self.bruker = True
-        self.volumetric = False
 
         self.process_bruker_filestructure()
 
@@ -77,6 +76,9 @@ class BrukerFish(Fish):
                                     self.data_paths['volumes'][volume_ind]['image'] = Path(sub.path)
                                 elif sub.name == 'frametimes.h5':
                                     self.data_paths['volumes'][volume_ind]['frametimes'] = Path(sub.path)
+
+        if 'mesmerize' in self.data_paths.keys():
+            self.process_mesmerize_filestructure()
 
     def create_frametimes_txt(self):
         '''Creates a frametimes.txt file from the log xml file'''

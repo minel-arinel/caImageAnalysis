@@ -2,7 +2,6 @@ import numpy as np
 from pathlib import Path
 
 from .fish import Fish
-from caImageAnalysis.mesm import load_mesmerize
 from caImageAnalysis.utils import get_injection_frame
 
 
@@ -10,6 +9,7 @@ class VolumeFish(Fish):
     def __init__(self, folder_path):
         super().__init__(folder_path)
 
+        self.volumetric = True
         self.process_volumetric_filestructure()
 
     def split_volume(self, len_thresh=50):
@@ -166,24 +166,3 @@ class VolumeFish(Fish):
                             elif 'F_frames' in sub.name:
                                 self.data_paths['volumes'][volume_ind]['F_frames'] = Path(sub.path)
         self.process_mesmerize_filestructure()
-
-    def process_mesmerize_filestructure(self):
-        '''TODO: mesmerize filestructure for non-volumetric images'''
-        '''Appends volumetric mesmerize uuid paths to the data_paths'''
-        if 'mesmerize' in self.data_paths.keys():
-            mes_df = load_mesmerize(self)
-            for i, row in mes_df.iterrows():
-                if row.algo == 'mcorr':
-                    try:
-                        plane = row.item_name[row.item_name.rfind('_')+1:]
-                        mesm_path = self.data_paths['mesmerize']
-                        self.data_paths['volumes'][plane]['mcorr'] = self.data_paths['mesmerize'].joinpath(row.outputs['mcorr-output-path'])
-                    except:
-                        pass
-
-                elif row.algo == 'cnmf':
-                    try:
-                        plane = row.item_name[row.item_name.rfind('_')+1:]
-                        self.data_paths['volumes'][plane]['cnmf'] = self.data_paths['mesmerize'].joinpath(row.outputs['cnmf-memmap-path'])
-                    except:
-                        pass
