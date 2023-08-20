@@ -50,7 +50,7 @@ def calculate_fps(frametimes_path):
     '''Calculates the imaging rate in frames per second'''
     frametimes = pd.read_hdf(frametimes_path)
 
-    increment = 5
+    increment = 10
     test0 = 0
     test1 = increment
     while True:
