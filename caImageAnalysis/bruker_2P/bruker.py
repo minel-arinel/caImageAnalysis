@@ -1,11 +1,14 @@
 from bs4 import BeautifulSoup
 from datetime import datetime as dt
 from datetime import timedelta
+import matplotlib.pyplot as plt
 import numpy as np
 import os
 from pathlib import Path
 import tifffile
 
+from .bruker_utils import round_microseconds
+from .voltage_output import VoltageOutput
 from caImageAnalysis import Fish
 
 
@@ -36,6 +39,7 @@ class BrukerFish(Fish):
                     self.data_paths['rotated'] = Path(entry.path)
                 elif entry.name == 'frametimes.txt':
                     self.data_paths['frametimes'] = Path(entry.path)
+                    self.raw_text_frametimes_to_df()
                 elif entry.name == 'opts.pkl':
                     self.data_paths['opts'] = Path(entry.path)
                     
@@ -46,14 +50,19 @@ class BrukerFish(Fish):
                     if os.path.isdir(entry.path) and entry.name == 'References':
                         self.data_paths['references'] = Path(entry.path)
                     elif (entry.name.endswith('.xml')) and (not entry.name.startswith('.')):
-                        parsed = entry.name.split('_')
-                        if parsed[-2] == 'MarkPoints':
-                            self.data_paths['markpoints'] = Path(entry.path)
-                        elif parsed[-2] == 'VoltageOutput':
-                            self.data_paths['voltage_output'] = Path(entry.path)
-                        else:
+                        try:
+                            parsed = entry.name.split('_')
+                            if parsed[-2] == 'MarkPoints':
+                                self.data_paths['markpoints'] = Path(entry.path)
+                            elif parsed[-2] == 'VoltageOutput':
+                                self.data_paths['voltage_output'] = Path(entry.path)
+                        except IndexError:
                             self.data_paths['log'] = Path(entry.path)
                         
+        if 'voltage_output' in self.data_paths.keys():
+            self.voltage_output = VoltageOutput(self.data_paths['voltage_output'], self.data_paths['log'])
+            self.frametimes_df = self.voltage_output.align_pulses_to_frametimes(self.frametimes_df)
+        
         if self.volumetric:
             self.data_paths['volumes'] = dict()
             with os.scandir(self.exp_path) as entries:
@@ -76,7 +85,7 @@ class BrukerFish(Fish):
 
         Bs_data = BeautifulSoup(log)
         frames = Bs_data.find_all('frame')
-        str_time = Bs_data.find_all('sequence')[0]['time']
+        str_time = Bs_data.find_all('sequence')[0]['time']  # start time of the experiment
 
         str_time = round_microseconds(str_time)
         dt_time = dt.strptime(str_time, '%H:%M:%S.%f')
@@ -85,15 +94,19 @@ class BrukerFish(Fish):
         self.data_paths['frametimes'] = Path(frametimes_path)
 
         with open(frametimes_path, 'w') as file:
-            for frame in frames:
-                str_abstime = round_microseconds(frame['absolutetime'])
-                dt_abstime = timedelta(seconds=int(str_abstime[:str_abstime.find('.')]),
-                                       microseconds=int(str_abstime[str_abstime.find('.')+1:]))
-                str_final_time = dt.strftime(dt_time + dt_abstime, '%H:%M:%S.%f')
-                file.write(str_final_time + '\n')
+            for i, frame in enumerate(frames):
+                if frame['relativetime'] == 0 and i != 0:  # if the anatomy stack starts
+                    break
+                else:
+                    str_abstime = round_microseconds(frame['absolutetime'])
+                    dt_abstime = timedelta(seconds=int(str_abstime[:str_abstime.find('.')]),
+                                        microseconds=int(str_abstime[str_abstime.find('.')+1:]))
+                    str_final_time = dt.strftime(dt_time + dt_abstime, '%H:%M:%S.%f')
+                    file.write(str_final_time + '\n')
 
         self.raw_text_frametimes_to_df()
-
+        self.frametimes_df = self.voltage_output.align_pulses_to_frametimes(self.frametimes_df)
+    
     def combine_channel_images(self, channel):
         '''Combines a channel's images'''
         channels = ['Ch1', 'Ch2']
@@ -107,12 +120,22 @@ class BrukerFish(Fish):
                     ch_image_paths.append(Path(entry.path))
 
         ch_images = [np.array(tifffile.imread(img_path)) for img_path in ch_image_paths]
+        
+        # find out if there is an anatomy stack
+        n_planes = ch_images[0].shape[0]
+        anatomy_index = [i for i, img in enumerate(ch_images) if img.shape[0] != n_planes]
+        if len(anatomy_index) != 0:
+            del ch_images[anatomy_index[0]]
+            self.data_paths['anatomy'] = ch_image_paths[anatomy_index[0]]
+
         raw_img = np.concatenate(ch_images)
         
         ch_image_path = Path(os.path.join(self.exp_path, f'{channel.lower()}.tif'))
         tifffile.imwrite(ch_image_path, raw_img)
 
         self.data_paths['raw_image'] = ch_image_path
+
+        plt.imshow(raw_img[0])
 
     def split_bruker_volumes(self, channel):
         '''Splits volumes to individual planes'''
@@ -143,14 +166,7 @@ class BrukerFish(Fish):
             tifffile.imwrite(os.path.join(plane_folder_path, 'image.tif'), plane_img)
 
             plane_frametimes = self.frametimes_df[plane::n_planes].copy()
-            plane_frametimes.reset_index(drop=True)
+            plane_frametimes = plane_frametimes.reset_index(drop=True)
             plane_frametimes.to_hdf(os.path.join(plane_folder_path, 'frametimes.h5'), 'frametimes')
         
         self.process_bruker_filestructure()
-
-
-def round_microseconds(str_time):
-    seconds = str_time[str_time.rfind(':')+1:]
-    rounded_microsecs = round(float(seconds), 6)
-
-    return str_time[:str_time.rfind(':')+1] + str(rounded_microsecs)
