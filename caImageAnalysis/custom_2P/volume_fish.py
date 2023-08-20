@@ -1,3 +1,6 @@
+import numpy as np
+from pathlib import Path
+
 from .fish import Fish
 from caImageAnalysis.mesm import load_mesmerize
 from caImageAnalysis.utils import get_injection_frame
