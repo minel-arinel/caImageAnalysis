@@ -6,7 +6,7 @@ import numpy as np
 from copy import deepcopy
 from pathlib import Path
 from fastplotlib import ImageWidget, Plot
-from fastplotlib.graphics.selectors import LinearSelector
+from fastplotlib.graphics.line_slider import LineSlider
 from fastplotlib.graphics.text import TextGraphic
 from ipywidgets import FloatSlider, FloatText, Label, HBox, VBox, link, Layout
 from collections import OrderedDict
@@ -298,9 +298,9 @@ def visualize_mesmerize(df, algo, keys=None, roi_idxs=None, contrs='good'):
 
 def uuid_to_plane(df):
     '''Changes the item_names with a uuid to the plane name'''
-    for _, row in df.iterrows():
+    for i, row in df.iterrows():
         if row.item_name.rfind('_') == -1:  # for running on mesmerize outputs
-            row.item_name = df[df.uuid == row.item_name].item_name.values[0]
+            df.loc[i, 'item_name'] = df[df.uuid == row.item_name].item_name.values[0]
 
     return df
 
@@ -333,27 +333,31 @@ def visualize_temporal(fish, row):
 
         # add good contours to the plot within the widget
         contours_graphic = iw_cnmf.plot.add_line_collection(contours, colors="cyan", name="contours")
-        contours_graphic[ixs_good].colors = "cyan"
-        contours_graphic[ixs_bad].colors = "magenta"
+        contours_graphic[ixs_good].colors = 'cyan'
+        contours_graphic[ixs_bad].colors = 'magenta'
 
         # temporal plot
         plot_temporal = Plot()
 
         temporal_graphic = plot_temporal.add_line_collection(temporal, colors="cyan", name="temporal")
-        temporal_graphic[ixs_good].colors = "cyan"
-        temporal_graphic[ixs_bad].colors = "magenta"
+        temporal_graphic[ixs_good].colors = 'cyan'
+        temporal_graphic[ixs_bad].colors = 'magenta'
 
-        # injection line
+        # voltage output lines
         name = row['item_name']
         plane = name[name.rfind('_')+1:]
-        inj_frame = fish.data_paths['volumes'][plane]['inj_frame']
+        fts = pd.read_hdf(fish.data_paths['volumes'][plane]['frametimes'])
+        
+        for pulse in fts.pulse.unique():
+            if pulse != 0:
+                pulse_frame = fts[fts.pulse == pulse].index.values[0]
 
-        xs = [inj_frame] * 2
-        line = np.dstack([xs, [temporal.min(), temporal.max()]])[0]
-        plot_temporal.add_line(data=line, thickness=3, colors="red", name="injection")
+                xs = [pulse_frame] * 2
+                line = np.dstack([xs, [temporal.min(), temporal.max()]])[0]
+                plot_temporal.add_line(data=line, thickness=3, colors='red', name=f'pulse_{pulse}')
 
         # a vertical line that is synchronized to the image widget "t" (timepoint) slider
-        _ls = LinearSelector(x_pos=0, bounds=(temporal.min(), temporal.max()), slider=iw_cnmf.sliders["t"])
+        _ls = LineSlider(x_pos=0, bounds=(temporal.min(), temporal.max()), slider=iw_cnmf.sliders["t"])
         plot_temporal.add_graphic(_ls)
 
         return plot_temporal, iw_cnmf
@@ -600,7 +604,7 @@ def visualize_diff(df):
         subtract_means[i] = lambda x: x - means[i]
     iw.frame_apply = subtract_means
 
-    for subplot in iw.gridplot:
+    for subplot in iw.plot:
         subplot.graphics[0].cmap = "jet"
 
     return iw
