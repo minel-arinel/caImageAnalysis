@@ -92,7 +92,7 @@ def caiman_cnmf(fish, plane=None, **opts_dict):
     if plane is not None:
         if 'mesmerize' in fish.data_paths.keys():
             mes_df = load_mesmerize(fish)
-            input_movie_path = f'img_stack_{plane}\image.tif'
+            input_movie_path = f'img_stack_{plane}/image.tif'
 
             if input_movie_path in mes_df.input_movie_path.values:
                 idx = mes_df.input_movie_path.eq(input_movie_path).idxmax()
