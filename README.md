@@ -65,4 +65,6 @@ Two-photon calcium imaging analysis using CaImAn, mesmerize, and fastplotlib
 
 ## Important note
 
-Computing correlation image causes issues in `mesmerize-core`. To overcome the issue, replace your local `mesmerize_core/algorithms/mcorr.py` file with the one under `caImageAnalysis/mesmerize_core/mcorr.py`.
+Computing correlation image causes issues in `mesmerize-core`. To overcome the issue, replace your local `mesmerize_core/algorithms/mcorr.py` file with the one under `caImageAnalysis/replace/mesmerize_core/mcorr.py`.
+
+Viewing components causes issues in `caiman`. To overcome the issue, replace your local `caiman/source_extraction/cnmf/estimates.py` file with the one under `caImageAnalysis/replace/caiman/estimates.py`.
