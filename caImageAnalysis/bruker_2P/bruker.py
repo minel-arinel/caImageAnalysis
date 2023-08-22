@@ -4,12 +4,14 @@ from datetime import timedelta
 import matplotlib.pyplot as plt
 import numpy as np
 import os
+import pandas as pd
 from pathlib import Path
 import tifffile
 
 from .bruker_utils import round_microseconds
 from .voltage_output import VoltageOutput
 from caImageAnalysis import Fish
+from caImageAnalysis.utils import load_pickle
 
 
 class BrukerFish(Fish):
@@ -18,9 +20,9 @@ class BrukerFish(Fish):
 
         self.bruker = True
 
-        self.process_bruker_filestructure()
+        self.process_filestructure()
 
-    def process_bruker_filestructure(self):
+    def process_filestructure(self):
         '''Appends Bruker specific file paths to the data_paths'''
         with os.scandir(self.exp_path) as entries:
             for entry in entries:
@@ -41,6 +43,12 @@ class BrukerFish(Fish):
                     self.raw_text_frametimes_to_df()
                 elif entry.name == 'opts.pkl':
                     self.data_paths['opts'] = Path(entry.path)
+                elif entry.name == 'temporal.h5':
+                    self.data_paths['temporal'] = Path(entry.path)
+                    self.temporal_df = pd.read_hdf(self.data_paths['temporal'])
+                elif entry.name == 'vol_temporal.pkl':
+                    self.data_paths['vol_temporal'] = Path(entry.path)
+                    self.vol_temporal = load_pickle(self.data_paths['vol_temporal'])
                     
 
         if 'raw' in self.data_paths.keys():
@@ -171,4 +179,20 @@ class BrukerFish(Fish):
             plane_frametimes = plane_frametimes.reset_index(drop=True)
             plane_frametimes.to_hdf(os.path.join(plane_folder_path, 'frametimes.h5'), 'frametimes')
         
-        self.process_bruker_filestructure()
+        self.process_filestructure()
+
+    def get_pulse_frames(self):
+        '''Gets frame indices for each pulse (for bruker recordings)
+        Picks the smallest frame across planes'''
+        if not hasattr(self, 'temporal_df'):
+            raise AttributeError('Requires a temporal_df: Run temporal.py/save_temporal')
+        
+        if not hasattr(self, 'voltage_output'):
+            raise AttributeError('Requires a VoltageOutput')
+        
+        min_pulse_frames = list()
+        
+        for i in range(self.voltage_output.n_pulses):
+            min_pulse_frames.append(np.min([pulses[i] for pulses in self.temporal_df.pulse_frames]))
+
+        return min_pulse_frames

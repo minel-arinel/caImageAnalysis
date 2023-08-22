@@ -9,7 +9,7 @@ from tifffile import imread, imwrite, memmap
 from scipy.ndimage import rotate
 
 from caImageAnalysis.mesm import load_mesmerize
-from caImageAnalysis.utils import crop_image
+from caImageAnalysis.utils import crop_image, load_pickle
 
 
 class Fish:
@@ -97,6 +97,10 @@ class Fish:
                         self.data_paths['opts'] = Path(entry.path)
                     elif entry.name == 'temporal.h5':
                         self.data_paths['temporal'] = Path(entry.path)
+                        self.temporal_df = pd.read_hdf(self.data_paths['temporal'])
+                    elif entry.name == 'vol_temporal.pkl':
+                        self.data_paths['vol_temporal'] = Path(entry.path)
+                        self.vol_temporal = load_pickle(self.data_paths['vol_temporal'])
 
     def process_mesmerize_filestructure(self):
         '''TODO: mesmerize filestructure for non-volumetric images'''

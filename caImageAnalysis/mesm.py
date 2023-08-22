@@ -1,19 +1,13 @@
+from copy import deepcopy
+from itertools import product
+from math import ceil
+import matplotlib.pyplot as plt
 from mesmerize_core import *
+import numpy as np
 import os
 import pandas as pd
-from itertools import product
-import numpy as np
-from copy import deepcopy
 from pathlib import Path
-from fastplotlib import ImageWidget, Plot
-from fastplotlib.graphics.line_slider import LineSlider
-from fastplotlib.graphics.text import TextGraphic
-from ipywidgets import FloatSlider, FloatText, Label, HBox, VBox, link, Layout
-from collections import OrderedDict
 from sklearn.neighbors import BallTree as tree
-import matplotlib.pyplot as plt
-from math import ceil
-import pickle
 
 from caImageAnalysis.utils import *
 from caImageAnalysis.visualize import *
@@ -248,54 +242,6 @@ def add_volume(fish, algo):
     return vol_df
 
 
-def visualize_mesmerize(df, algo, keys=None, roi_idxs=None, contrs='good'):
-    '''Visualize results from a mesmerize dataframe
-    keys: indices to visualize
-    conts: for cnmf, which contours to visualize (can be 'all', 'good', or 'none' '''
-    df = df[df['algo'] == algo]
-
-    if algo == 'mcorr':
-        movies = [df.iloc[0].caiman.get_input_movie()]
-        subplot_names = ["raw"]
-        for i, row in df.iterrows():
-            movies.append(row.mcorr.get_output())
-            subplot_names.append(f"index: {i}")
-
-    elif algo == 'cnmf':
-        items_contours = list()
-        subplot_names = list()
-        movies = list()
-        for i, row in df.iterrows():
-            if keys is None or (keys is not None and i in keys):
-                movie = row.caiman.get_input_movie()
-                movies.append(movie)
-
-                contours, coms = row.cnmf.get_contours(contrs, swap_dim=False)
-                if roi_idxs is not None:
-                    contours = [contours[idx] for idx in roi_idxs]
-                # flip the contours along the y-axis for visualization
-                y_max = movie.shape[1]
-                for contour in contours:
-                    contour[:, 1] = y_max - contour[:, 1]
-                # you can also pass "bad", "all" integer indices or a list/array of indices
-                items_contours.append(contours)
-                subplot_names.append(f"index: {i}")
-
-    else:
-        raise ValueError('algo must be \'mcorr\' or \'cnmf\'')
-
-    # create the widget
-    iw = visualize_images(imgs=movies, names=subplot_names)
-
-    if algo == 'cnmf':
-        for i, subplot in enumerate(iw.plot):  # enumerate gives the iteration number
-            if i < len(items_contours):
-                contours = items_contours[i]
-                subplot.add_line_collection(contours, colors="w", alpha=0.7, name="contours")
-
-    return iw
-
-
 def uuid_to_plane(df):
     '''Changes the item_names with a uuid to the plane name'''
     for i, row in df.iterrows():
@@ -303,311 +249,6 @@ def uuid_to_plane(df):
             df.loc[i, 'item_name'] = df[df.uuid == row.item_name].item_name.values[0]
 
     return df
-
-
-def visualize_temporal(fish, row):
-    '''Visualizes spatial components of a single movie and their temporal responses'''
-    if not isinstance(row, pd.core.series.Series):
-        raise ValueError('Input must be a pandas Series')
-    else:
-        # get the motion corrected input movie as a memmap
-        _cnmf_movie = row.caiman.get_input_movie()
-        cnmf_movie = np.flip(_cnmf_movie, axis=1)
-
-        # we can get the contours of the spatial components
-        contours, coms = row.cnmf.get_contours("all", swap_dim=False)
-
-        # flip the contours along the y-axis for visualization
-        y_max = cnmf_movie.shape[1]
-        for contour in contours:
-            contour[:, 1] = y_max - contour[:, 1]
-
-        # and temporal components
-        temporal = row.cnmf.get_temporal("all")
-
-        ixs_good = row.cnmf.get_good_components()
-        ixs_bad = row.cnmf.get_bad_components()
-
-        # for the image data and contours
-        iw_cnmf = ImageWidget(cnmf_movie, vmin_vmax_sliders=True, cmap="gnuplot2")
-
-        # add good contours to the plot within the widget
-        contours_graphic = iw_cnmf.plot.add_line_collection(contours, colors="cyan", name="contours")
-        contours_graphic[ixs_good].colors = 'cyan'
-        contours_graphic[ixs_bad].colors = 'magenta'
-
-        # temporal plot
-        plot_temporal = Plot()
-
-        temporal_graphic = plot_temporal.add_line_collection(temporal, colors="cyan", name="temporal")
-        temporal_graphic[ixs_good].colors = 'cyan'
-        temporal_graphic[ixs_bad].colors = 'magenta'
-
-        # voltage output lines
-        name = row['item_name']
-        plane = name[name.rfind('_')+1:]
-        fts = pd.read_hdf(fish.data_paths['volumes'][plane]['frametimes'])
-        
-        for pulse in fts.pulse.unique():
-            if pulse != 0:
-                pulse_frame = fts[fts.pulse == pulse].index.values[0]
-
-                xs = [pulse_frame] * 2
-                line = np.dstack([xs, [temporal.min(), temporal.max()]])[0]
-                plot_temporal.add_line(data=line, thickness=3, colors='red', name=f'pulse_{pulse}')
-
-        # a vertical line that is synchronized to the image widget "t" (timepoint) slider
-        _ls = LineSlider(x_pos=0, bounds=(temporal.min(), temporal.max()), slider=iw_cnmf.sliders["t"])
-        plot_temporal.add_graphic(_ls)
-
-        return plot_temporal, iw_cnmf
-
-
-def compeval_sliders():
-    '''Generates the evaluation sliders'''
-    # low thresholds
-    lt = OrderedDict(
-        rval_lowest=(-1.0, -1.0, 1.0), # (val, min, max)
-        SNR_lowest=(0.5, 0., 100),
-        cnn_lowest=(0.1, 0., 1.0),
-    )
-
-    # high thresholds
-    ht = OrderedDict(
-        rval_thr=(0.8, 0., 1.0),
-        min_SNR=(2.5, 0., 100),
-        min_cnn_thr=(0.9, 0., 1.0),
-    )
-
-    lw = list()
-    for k in lt:
-        kwargs = dict(value=lt[k][0], min=lt[k][1], max=lt[k][2], step=0.01, description=k)
-        slider = FloatSlider(**kwargs)
-        entry = FloatText(**kwargs, layout=Layout(width="150px"))
-
-        link((slider, "value"), (entry, "value"))
-
-        lw.append(HBox([slider, entry]))
-
-    hw = list()
-    for k in ht:
-        kwargs = dict(value=ht[k][0], min=ht[k][1], max=ht[k][2], step=0.01, description=k)
-        slider = FloatSlider(**kwargs)
-        entry = FloatText(**kwargs, layout=Layout(width="150px"))
-
-        link((slider, "value"), (entry, "value"))
-
-        hw.append(HBox([slider, entry]))
-
-    label_eval = Label(value="")
-
-    return lw, hw, label_eval
-
-
-def visualize_compeval(fish, row):
-    '''visualize_temporal() but with component evaluation metrics'''
-
-    plot_l, iw = visualize_temporal(fish, row)
-    lw, hw, label_eval = compeval_sliders()
-
-    def get_eval_params():
-        '''Gets the values from the GUI'''
-        _eval_params = [{w.children[0].description: w.children[0].value for w in ws} for ws in [lw, hw]]
-        return {**_eval_params[0], **_eval_params[1]}
-
-    global eval_params
-    eval_params = get_eval_params()
-
-    @iw.plot.renderer.add_event_handler("resize")
-    def update_with(*args):
-        w = iw.plot.canvas.get_logical_size()[0]
-        h = plot_l.canvas.get_logical_size()
-        plot_l.canvas.set_logical_size(w, h)
-
-    def update_eval(p):
-        '''Animation function'''
-        global eval_params
-
-        new_eval_params = get_eval_params()
-
-        if new_eval_params == eval_params:
-            return
-        eval_params = new_eval_params
-
-        label_eval.value = "Please wait running eval..."
-        # run eval
-        row.cnmf.run_eval(new_eval_params)
-        label_eval.value = ""
-
-        # get the new indices after eval
-        good_ixs = row.cnmf.get_good_components()
-        bad_ixs = row.cnmf.get_bad_components()
-
-        # if mode == "colors":
-        #     # make sure all of them are present
-        #     p["contours"][:].present = True
-        #
-        #     # set colors
-        #     p["contours"][:].colors.block_events(True)
-        #     p["contours"][good_ixs].colors = "cyan"
-        #     p["contours"][bad_ixs].colors = "magenta"
-        #     p["contours"][:].colors.block_events(False)
-
-        # elif mode == "present":
-
-        # make them all cyan
-        p["contours"][:].colors = "cyan"
-
-        # set present=True for good
-        p["contours"][:].colors.block_events(True)
-        p["contours"][good_ixs].present = True
-        p["contours"][bad_ixs].present = False
-        p["contours"][:].colors.block_events(False)
-
-    iw.plot.add_animations(update_eval)
-
-    return [
-                plot_l,
-                iw,
-                label_eval,
-                Label(value="Low Thresholds"),
-                *lw,
-                Label(value="High Thresholds"),
-                *hw
-            ]
-
-
-def visualize_compeval_volume(fish):
-    '''TODO: Get this to work. Currently gets stuck at evaluating'''
-    '''Component evaluation on the volume'''
-    mes_df = load_mesmerize(fish)
-    df = mes_df[mes_df.algo == 'cnmf']
-
-    iw = visualize_mesmerize(mes_df, 'cnmf', contrs='all')
-
-    lw, hw, label_eval = compeval_sliders()
-
-    def get_eval_params():
-        '''Gets the values from the GUI'''
-        _eval_params = [{w.children[0].description: w.children[0].value for w in ws} for ws in [lw, hw]]
-        return {**_eval_params[0], **_eval_params[1]}
-
-    global eval_params
-    eval_params = get_eval_params()
-
-    def update_eval(p):
-        '''Animation function'''
-        global eval_params
-
-        new_eval_params = get_eval_params()
-
-        if new_eval_params == eval_params:
-            return
-        eval_params = new_eval_params
-
-        label_eval.value = "Please wait running eval..."
-
-        for i, row in df.iterrows():
-            # run eval
-            row.cnmf.run_eval(new_eval_params)
-            label_eval.value = ""
-
-            # get the new indices after eval
-            good_ixs = row.cnmf.get_good_components()
-            bad_ixs = row.cnmf.get_bad_components()
-
-            sub_p = iw.plot[f'index: {i}']
-
-            # make them all cyan
-            sub_p["contours"][:].colors = "cyan"
-
-            # set present=True for good
-            sub_p["contours"][:].colors.block_events(True)
-            sub_p["contours"][good_ixs].present = True
-            sub_p["contours"][bad_ixs].present = False
-            sub_p["contours"][:].colors.block_events(False)
-
-    iw.plot.add_animations(update_eval)
-
-    return [
-                iw,
-                label_eval,
-                Label(value="Low Thresholds"),
-                *lw,
-                Label(value="High Thresholds"),
-                *hw
-            ]
-
-
-def interactive_temporal(plot_temporal, iw_cnmf):
-    '''Maps click events of contours to temporal graphs'''
-    plot_temporal.auto_scale()
-    plot_temporal.camera.scale.x = 0.85
-
-    temporal_graphic = plot_temporal['temporal']
-    temporal_graphic[:].present = False
-
-    image_graphic = iw_cnmf.plot["image"]
-    contours_graphic = iw_cnmf.plot['contours']
-
-    # link image to contours
-    image_graphic.link(
-        "click",
-        target=contours_graphic,
-        feature="colors",
-        new_data="w",
-        callback=euclidean
-    )
-
-    # thickness of contour
-    contours_graphic.link("colors", target=contours_graphic, feature="thickness", new_data=5)
-
-    # toggle temporal component when contour changes color
-    contours_graphic.link("colors", target=temporal_graphic, feature="present", new_data=True)
-
-    # autoscale temporal plot to the current temporal component
-    temporal_graphic[:].present.add_event_handler(plot_temporal.auto_scale)
-
-
-def euclidean(source, target, event, new_data):
-    '''maps click events to contour'''
-    # calculate coms of line collection
-    indices = np.array(event.pick_info["index"])
-
-    coms = list()
-
-    for contour in target.graphics:
-        coors = contour.data()[~np.isnan(contour.data()).any(axis=1)]
-        com = coors.mean(axis=0)
-        coms.append(com)
-
-    # euclidean distance to find closest index of com
-    indices = np.append(indices, [0])
-
-    ix = int(np.linalg.norm((coms - indices), axis=1).argsort()[0])
-
-    target._set_feature(feature="colors", new_data=new_data, indices=ix)
-
-    return None
-
-
-def visualize_diff(df):
-    '''Visualizes the difference from mean for each mesmerize motion correction output'''
-    iw = visualize_mesmerize(df, 'mcorr')
-
-    means = [df.iloc[0].caiman.get_projection("mean")]
-    for i, row in df.iterrows():
-        means.append(row.caiman.get_projection("mean"))
-
-    subtract_means = {}
-    for i in range(len(means)):
-        subtract_means[i] = lambda x: x - means[i]
-    iw.frame_apply = subtract_means
-
-    for subplot in iw.plot:
-        subplot.graphics[0].cmap = "jet"
-
-    return iw
 
 
 def clean_mesmerize(df, keep_rows, keep_algo=None):
@@ -858,7 +499,7 @@ def remove_xy(fish, indices=None, xy_cutoff=25):
     return good_rois
 
 
-def remove_low_t(fish, indices=None, t_cutoff=100):
+def remove_low_t(fish, indices=None, peak_cutoff=100):
     '''Removes components with a max temporal peak less than the cutoff'''
     mes_df = uuid_to_plane(load_mesmerize(fish))
     cnmf_df = mes_df[mes_df.algo == 'cnmf'].reset_index()
@@ -888,7 +529,7 @@ def remove_low_t(fish, indices=None, t_cutoff=100):
         for ix in ixs:
             com = coms[ix]
             axs[i, 0].scatter(com[0], com[1])
-            if temporal[ix].max() > t_cutoff:
+            if temporal[ix].max() > peak_cutoff:
                 _ixs.append(ix)
                 axs[i, 1].scatter(com[0], com[1])
 
@@ -896,25 +537,25 @@ def remove_low_t(fish, indices=None, t_cutoff=100):
         axs[i, 0].set_ylim([y, 0])
         axs[i, 1].set_xlim([0, x])
         axs[i, 1].set_ylim([y, 0])
-        axs[i, 1].set_title(f'{row.item_name}: After t_cutoff')
+        axs[i, 1].set_title(f'{row.item_name}: After peak_cutoff')
         good_rois[row.item_name] = np.array(_ixs)
     plt.show()
 
     params = load_params(fish)
-    params['t_cutoff'] = t_cutoff
+    params['peak_cutoff'] = peak_cutoff
     save_params(fish, params)
 
     return good_rois
 
 
-def plot_t_distribution(row, indices, t_cutoff=100):
-    '''Plots the distribution of peak t values below the cutoff'''
+def plot_t_distribution(row, indices, peak_cutoff=100):
+    '''Plots the distribution of peak fluorescence values below the cutoff'''
     temporal = row.cnmf.get_temporal('good')[indices]
     fig = plt.figure(2, figsize=(10, 1))
     for t in temporal:
-        if t.max() < t_cutoff:
+        if t.max() < peak_cutoff:
             plt.scatter(t.max(), 1)
-    plt.title(f'{row.item_name}: Peak t of components below t_cutoff')
+    plt.title(f'{row.item_name}: Peak fluorescence of components below peak_cutoff')
     plt.show()
 
 
@@ -1021,43 +662,6 @@ def load_rois(fish):
     '''Loads the final_rois pickle file under the mesmerize-batch folder as a dict'''
     path = fish.data_paths['mesmerize'].joinpath('final_rois.pickle')
     return load_pickle(path)
-
-
-def save_temporal(fish):
-    '''Saves the temporal components of final ROIs as a temporal.h5 file'''
-    mes_df = uuid_to_plane(load_mesmerize(fish))
-    final_rois = load_rois(fish)
-
-    planes = []
-    temporal = []
-    roi_indices = []
-    inj_frames = []
-
-    for i, row in mes_df.iterrows():
-        if row.algo == 'cnmf':
-
-            name = row['item_name']
-            if name not in final_rois.keys():
-                continue
-
-            plane = name[name.rfind('_')+1:]
-            inj = fish.data_paths['volumes'][plane]['inj_frame']
-
-            planes.append(int(plane))
-            inj_frames.append(inj)
-
-            temp = row.cnmf.get_temporal('good')
-            indices = final_rois[name]
-
-            temporal.append(temp[indices])
-            roi_indices.append(indices)
-
-    temporal_df = pd.DataFrame({'plane': planes,
-                                'temporal': temporal,
-                                'roi_indices': roi_indices,
-                                'inj_frame': inj_frames})
-    temporal_df.sort_values(by=['plane'], ignore_index=True, inplace=True)
-    temporal_df.to_hdf(fish.exp_path.joinpath('temporal.h5'), key='temporal')
 
 
 def plot_single_rois(row, indices):

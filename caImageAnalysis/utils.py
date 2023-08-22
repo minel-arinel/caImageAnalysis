@@ -1,12 +1,12 @@
 from datetime import datetime as dt
-from tifffile import imread, imwrite
-import numpy as np
-import pandas as pd
-import os
 import matplotlib.pyplot as plt
 import matplotlib.cm as colormap
+import numpy as np
+import os
+import pandas as pd
 from pathlib import Path
 import pickle
+from tifffile import imread, imwrite
 
 
 def crop_image(img, path=None, crop=0.075):
@@ -77,7 +77,7 @@ def calculate_fps(frametimes_path):
 
 
 def get_injection_frame(frametimes):
-    '''Gets injection frame index'''
+    '''Gets injection frame index (for custom_2P recordings)'''
     if isinstance(frametimes, str) or isinstance(frametimes, Path):
         frametimes = pd.read_hdf(frametimes)
     frametimes = frametimes.reset_index()
@@ -92,54 +92,7 @@ def save_pickle(val, path):
 
 
 def load_pickle(path):
-    '''Loads the params pickle file under the mesmerize-batch folder as a dict'''
+    '''Loads a pickle file and returns the value'''
     with open(path, 'rb') as p_file:
         p = pickle.load(p_file)
     return p
-
-
-def load_temporal(fish):
-    '''Load the temporal.h5 file'''
-    df = pd.read_hdf(fish.data_paths['temporal'])
-    return df
-
-
-def compute_dff(fish):
-    '''Computes the dF/F signal for each component'''
-    temporal_df = load_temporal(fish)
-    temporal_df['dff'] = None
-
-    for i, row in temporal_df.iterrows():
-        inj = row.inj_frame
-        dffs = []
-
-        for comp in row.temporal:
-            baseline = comp[:inj]
-            f0 = np.median(baseline)
-            dff = (comp - f0)/abs(f0)
-            dffs.append(dff)
-
-        temporal_df['dff'][i] = dffs
-
-    temporal_df.to_hdf(fish.data_paths['postgavage_path'].joinpath('temporal.h5'), key='temporal')
-
-    return temporal_df
-
-
-def normalize_dff(fish):
-    '''Normalizes each dF/F signal between 0 and 1'''
-    temporal_df = load_temporal(fish)
-    temporal_df['norm_dff'] = None
-
-    for i, row in temporal_df.iterrows():
-        norm_dffs = []
-
-        for comp in row.dff:
-            norm_dff = (comp - min(comp)) / (max(comp) - min(comp))
-            norm_dffs.append(norm_dff)
-
-        temporal_df['norm_dff'][i] = norm_dffs
-
-    temporal_df.to_hdf(fish.data_paths['postgavage_path'].joinpath('temporal.h5'), key='temporal')
-
-    return temporal_df

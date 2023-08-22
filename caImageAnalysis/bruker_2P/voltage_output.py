@@ -36,6 +36,8 @@ class VoltageOutput:
         self.repetitions = int(self.pulse_train.repetitions.string)  # repetitions of the entire pulse train
         self.delay_between_reps = int(self.pulse_train.delaybetweenreps.string)  # duration between pulse trains
 
+        self.n_pulses = self.pulse_count * self.repetitions  # total number of pulses duing the waveform
+
         self.get_output_dt(log_path)
     
     def get_output_dt(self, log_path):
@@ -60,7 +62,7 @@ class VoltageOutput:
                                         microseconds=int(abstime[abstime.find('.')+1:]))
         dt_start_vo_time = dt_start_time + dt_abstime  # start time of the voltage output as a datetime
 
-        y, x = self.get_waveform()
+        y, _ = self.get_waveform()
         self.output_ts = np.where(np.diff(y) == self.delta_V)[0] + 1  # times of successful outputs (ms)
         
         self.output_dts = list()
