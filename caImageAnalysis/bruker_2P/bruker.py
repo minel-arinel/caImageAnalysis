@@ -49,9 +49,14 @@ class BrukerFish(Fish):
                 elif entry.name == 'vol_temporal.pkl':
                     self.data_paths['vol_temporal'] = Path(entry.path)
                     self.vol_temporal = load_pickle(self.data_paths['vol_temporal'])
+                elif entry.name == 'anatomy.tif':
+                    self.data_paths['anatomy'] = Path(entry.path)
                     
 
         if 'raw' in self.data_paths.keys():
+            if 'anatomy' not in self.data_paths.keys():
+                self.data_paths['anatomy'] = self.get_anatomy()
+
             with os.scandir(self.data_paths['raw']) as entries:
                 for entry in entries:
                     if os.path.isdir(entry.path) and entry.name == 'References':
@@ -88,6 +93,18 @@ class BrukerFish(Fish):
         if 'mesmerize' in self.data_paths.keys():
             self.process_mesmerize_filestructure()
 
+    def get_anatomy(self):
+        '''Finds the anatomy stack in the raw data folder'''
+        imgs = [path for path in os.listdir(self.data_paths['raw']) if path.endswith('.ome.tif')]
+
+        first_img = tifffile.imread(self.data_paths['raw'].joinpath(imgs[0]))
+        last_img = tifffile.imread(self.data_paths['raw'].joinpath(imgs[-1]))
+
+        if first_img.shape[1] != last_img.shape[1]:
+            return self.data_paths['raw'].joinpath(imgs[-1])
+        else:
+            return None
+    
     def create_frametimes_txt(self):
         '''Creates a frametimes.txt file from the log xml file'''
         with open(self.data_paths['log'], 'r') as file:
