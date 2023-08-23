@@ -2,7 +2,9 @@ import matplotlib.pyplot as plt
 from matplotlib.cm import get_cmap
 import numpy as np
 import pandas as pd
+import random
 import scipy.cluster.hierarchy as sch
+from scipy.stats import sem
 
 from .mesm import load_mesmerize, load_rois, uuid_to_plane
 from .utils import save_pickle
@@ -123,6 +125,86 @@ def normalize_dff(fish):
     return fish.temporal_df
 
 
+def cluster_temporal(fish, max_inter_cluster_dist=10, sort=True, savefig=False):
+    '''
+    Clusters temporal responses using hierarchical and flat clustering
+    
+    max_inter_cluster_dist: threshold for maximum inter-cluster distance allowed
+    sort: sorts the cluster keys in ascending order if True
+    '''
+    # Hierarchical clustering of temporal responses
+    d = sch.distance.pdist(fish.vol_temporal)
+    Z = sch.linkage(d, method='complete')
+
+    # Flat clustering of the dendrogram
+    T = sch.fcluster(Z, max_inter_cluster_dist, criterion='distance', depth=3)
+    print(f'Number of clusters: {T.max()}')
+
+    sort_inds = np.argsort(T)  # indices for ordering components by cluster number
+        
+    # Create a clusters dictionary to store all temporal responses per cluster
+    clusters = dict()
+    for i, cluster in enumerate(T[sort_inds]):
+        if cluster in clusters:
+            clusters[cluster].append(fish.vol_temporal[sort_inds][i])
+        else:
+            clusters[cluster] = [fish.vol_temporal[sort_inds][i]]
+
+    # Create a dictionary that holds the median of maximum peak indices in a cluster
+    peak_clusters = dict()
+    for cl in clusters:
+        inds = []
+        for t in clusters[cl]:
+            i = np.argmax(t)
+            inds.append(i)
+        peak_clusters[cl] = np.median(inds)
+
+    # Group the centers of mass of spatial components based on clusters
+    mes_df = uuid_to_plane(load_mesmerize(fish))
+    all_coms = list()
+
+    for i, row in fish.temporal_df.iterrows():
+        plane = f'img_stack_{row.plane}'
+        mes_row = mes_df[(mes_df.algo == 'cnmf') & (mes_df.item_name == plane)].iloc[0]
+        _, coms = mes_row.cnmf.get_contours('good', swap_dim=False)  
+        coms = np.array(coms)
+        coms = coms[row.roi_indices]  # get the accepted components
+        all_coms.append(coms)
+
+    all_coms = np.concatenate(all_coms)
+
+    com_clusters = dict()
+    for i, cluster in enumerate(T[sort_inds]):
+        if cluster in com_clusters:
+            com_clusters[cluster].append(all_coms[sort_inds][i])
+        else:
+            com_clusters[cluster] = [all_coms[sort_inds][i]]
+    
+    fig = plt.figure(figsize=(25, 10))
+    dn = sch.dendrogram(Z)
+    plt.hlines(max_inter_cluster_dist, 0, len(d), color='r')
+    plt.title(f'Clustering: max_inter_cluster_dist={max_inter_cluster_dist}')
+    plt.show()
+
+    if savefig:
+        plt.savefig(fish.exp_path.joinpath("hierarchical_clustering.pdf"), transparent=True)
+    
+    if sort:  
+        # Sorted cluster keys      
+        sorted_keys = sorted(clusters, key=lambda k: len(clusters[k]), reverse=True)  
+        sorted_peak_keys = sorted(peak_clusters, key=lambda k: peak_clusters[k])
+        
+        # Actually sorted clusters
+        sorted_clusters = {key: clusters[key] for key in sorted_keys}
+        sorted_peak_clusters = {key: clusters[key] for key in sorted_peak_keys}
+        sorted_com_clusters = {key: com_clusters[key] for key in sorted_keys}
+    
+        return sort_inds, sorted_clusters, sorted_peak_clusters, sorted_com_clusters
+    
+    else:
+        return sort_inds, clusters, peak_clusters, com_clusters
+
+
 def plot_temporal(fish, plane, indices=None, heatmap=False, key=None):
     '''Plots individual temporal components of a plane'''
     row = fish.temporal_df[fish.temporal_df.plane == plane].iloc[0]
@@ -207,49 +289,54 @@ def plot_temporal_volume(fish, data=None, title=None, clusters=None, savefig=Fal
     plt.show()
 
 
-def cluster_temporal(fish, max_inter_cluster_dist=10, sort=False):
-    '''Clusters temporal responses using hierarchical and flat clustering'''
-    # Hierarchical clustering of temporal responses
-    d = sch.distance.pdist(fish.vol_temporal)
-    Z = sch.linkage(d, method='complete')
+def plot_representative_trace(fish, clusters, savefig=False):
+    '''Given a clusters dictionary, plots a random temporal trace per cluster'''
+    fig, axes = plt.subplots(len(clusters), 1, sharex=True, sharey=True, figsize=(20, 20))
 
-    # Flat clustering of the dendrogram
-    T = sch.fcluster(Z, max_inter_cluster_dist, criterion='distance', depth=3)
-    print(f'Number of clusters: {T.max()}')
+    for i, (cluster, temp) in enumerate(clusters.items()):
+        t = random.choice(temp)
+        axes[i].plot(t)
+        axes[i].title.set_text(cluster)
+        for pulse in fish.get_pulse_frames():
+            axes[i].vlines(pulse, 0, 1, color='r')
 
-    fig = plt.figure(figsize=(25, 10))
-    dn = sch.dendrogram(Z)
-    plt.hlines(max_inter_cluster_dist, 0, len(d), color='r')
-    plt.title(f'Clustering: max_inter_cluster_dist={max_inter_cluster_dist}')
-
-    plt.savefig(fish.exp_path.joinpath("hierarchical_clustering.pdf"), transparent=True)
+    if savefig:    
+        plt.savefig(fish.exp_path.joinpath("cluster_representative_traces.pdf"), transparent=True)
     
-    if sort:
-        sorted_inds = np.argsort(T)
-        
-        # Create a clusters dictionary to store all temporal responses per cluster
-        clusters = dict()
 
-        for i, cluster in enumerate(T[sorted_inds]):
-            if cluster in clusters:
-                clusters[cluster].append(fish.vol_temporal[sorted_inds][i])
-            else:
-                clusters[cluster] = [fish.vol_temporal[sorted_inds][i]]
-                
-        sorted_keys = sorted(clusters, key=lambda k: len(clusters[k]), reverse=True)
-        sorted_clusters = {key: clusters[key] for key in sorted_keys}
+def plot_average_traces(fish, clusters, savefig=False):
+    '''Given a clusters dictionary, plots the mean temporal trace per cluster'''
+    fig, axes = plt.subplots(len(clusters), 1, sharex=True, sharey=True, figsize=(20, 20))
 
-        # Create a dictionary that holds the median index of maximum peak indices in a cluster
-        max_inds = dict()
-        for cl in clusters:
-            inds = []
-            for t in clusters[cl]:
-                i = np.argmax(t)
-                inds.append(i)
-            max_inds[cl] = np.median(inds)
+    for i, (cluster, temp) in enumerate(clusters.items()):
+        t = np.mean(temp, axis=0)
+        err = sem(temp)
+        x = np.linspace(0, len(t), len(t))
 
-        sorted_ind_keys = sorted(max_inds, key=lambda k: max_inds[k])
-        sorted_ind_clusters = {key: clusters[key] for key in sorted_ind_keys}
+        axes[i].plot(t)
+        axes[i].fill_between(x, t-err, t+err, alpha=0.2)
+        axes[i].title.set_text(cluster)
+        for pulse in fish.get_pulse_frames():
+            axes[i].vlines(pulse, 0, 1, color='r')
 
-        return sorted_inds, sorted_clusters, sorted_ind_clusters
-    
+    if savefig:
+        plt.savefig(fish.exp_path.joinpath("cluster_average_traces.pdf"), transparent=True)
+
+
+def plot_spatial(fish, img, com_clusters, savefig=False):
+    '''Plots all spatial components on a plane'''
+    mes_df = uuid_to_plane(load_mesmerize(fish))
+
+    fig = plt.figure(figsize=(20, 20))
+    plt.imshow(img, cmap='gray')
+
+    cmap = get_cmap('Set1')  # type: matplotlib.colors.ListedColormap
+    cmap2 = get_cmap('Accent')  # type: matplotlib.colors.ListedColormap
+    colors = cmap.colors + cmap2.colors  # type: list
+
+    for i, (cluster, coms) in enumerate(com_clusters.items()):
+        for com in coms:
+            plt.scatter(com[0]*2, com[1]*2, s=150, color=colors[i])
+            
+    if savefig:
+        plt.savefig(fish.exp_path.joinpath("clusters_spatial_all.pdf"), transparent=True)
