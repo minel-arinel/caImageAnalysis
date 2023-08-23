@@ -9,7 +9,7 @@ from tifffile import imread, imwrite, memmap
 from scipy.ndimage import rotate
 
 from caImageAnalysis.mesm import load_mesmerize
-from caImageAnalysis.utils import crop_image, load_pickle
+from caImageAnalysis.utils import crop_image, load_pickle, rotate_image
 
 
 class Fish:
@@ -153,15 +153,11 @@ class Fish:
     def rotate_image(self, img_path, angle=0):
         '''Rotates image by angle'''
         image = imread(img_path)
-    
-        rot_img_path = img_path.parent.joinpath("raw_rotated.tif")
-        rotated_image = [rotate(img, angle=angle) for img in image]
-        imwrite(
-            rot_img_path, rotated_image, bigtiff=True
-        )
+        img_path = img_path.parent.joinpath("raw_rotated.tif")
+        rotated_image = rotate_image(image, path=img_path, angle=angle)
         
-        self.data_paths['rotated'] = rot_img_path
-
+        self.data_paths['rotated'] = img_path
+        
         plt.imshow(rotated_image[0])
 
     def flip_image(self):

@@ -6,15 +6,24 @@ import os
 import pandas as pd
 from pathlib import Path
 import pickle
+from scipy.ndimage import rotate
 from tifffile import imread, imwrite
 
 
-def crop_image(img, path=None, crop=0.075):
+def crop_image(image, path=None, crop=0.075):
     '''Crops image by crop. Default to 0.075 for 2P scanning flyback'''
-    cropped = img[:, :, int(img.shape[2] * crop) :]
+    cropped = image[:, :, int(image.shape[2] * crop) :]
     if path is not None:
         imwrite(path, cropped, bigtiff=True)
     return cropped
+
+
+def rotate_image(image, path=None, angle=0):
+    '''Rotates image by angle'''
+    rotated_image = [rotate(img, angle=angle) for img in image]
+    if path is not None:
+        imwrite(path, rotated_image, bigtiff=True)
+    return rotated_image
 
 
 def save_seq_with_text(fish, plane):
