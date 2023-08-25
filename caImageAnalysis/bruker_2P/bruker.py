@@ -43,6 +43,9 @@ class BrukerFish(Fish):
                     self.raw_text_frametimes_to_df()
                 elif entry.name == 'opts.pkl':
                     self.data_paths['opts'] = Path(entry.path)
+                elif entry.name == 'clusters.pkl':
+                    self.data_paths['clusters'] = Path(entry.path)
+                    self.clusters = load_pickle(Path(entry.path))
                 elif entry.name == 'temporal.h5':
                     self.data_paths['temporal'] = Path(entry.path)
                     self.temporal_df = pd.read_hdf(self.data_paths['temporal'])

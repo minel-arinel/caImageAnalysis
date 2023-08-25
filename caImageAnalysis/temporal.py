@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import random
 import scipy.cluster.hierarchy as sch
-from scipy.stats import sem
+from scipy.stats import sem, gaussian_kde
 
 from .mesm import load_mesmerize, load_rois, uuid_to_plane
 from .utils import save_pickle
@@ -125,7 +125,7 @@ def normalize_dff(fish):
     return fish.temporal_df
 
 
-def cluster_temporal(fish, max_inter_cluster_dist=10, sort=True, savefig=False):
+def cluster_temporal(fish, max_inter_cluster_dist, sort=True, savefig=False):
     '''
     Clusters temporal responses using hierarchical and flat clustering
     
@@ -195,14 +195,21 @@ def cluster_temporal(fish, max_inter_cluster_dist=10, sort=True, savefig=False):
         sorted_peak_keys = sorted(peak_clusters, key=lambda k: peak_clusters[k])
         
         # Actually sorted clusters
-        sorted_clusters = {key: clusters[key] for key in sorted_keys}
-        sorted_peak_clusters = {key: clusters[key] for key in sorted_peak_keys}
-        sorted_com_clusters = {key: com_clusters[key] for key in sorted_keys}
+        clusters = {key: clusters[key] for key in sorted_keys}
+        peak_clusters = {key: clusters[key] for key in sorted_peak_keys}
+        com_clusters = {key: com_clusters[key] for key in sorted_keys}
     
-        return sort_inds, sorted_clusters, sorted_peak_clusters, sorted_com_clusters
+    fish.clusters = {
+        'max_inter_cluster_dist': max_inter_cluster_dist,
+        'sort_inds': sort_inds,
+        'clusters': clusters,
+        'peak_clusters': peak_clusters,
+        'com_clusters': com_clusters
+    }
+
+    save_pickle(fish.clusters, fish.exp_path.joinpath('clusters.pkl'))
     
-    else:
-        return sort_inds, clusters, peak_clusters, com_clusters
+    return fish.clusters
 
 
 def plot_temporal(fish, plane, indices=None, heatmap=False, key=None):
@@ -323,20 +330,91 @@ def plot_average_traces(fish, clusters, savefig=False):
         plt.savefig(fish.exp_path.joinpath("cluster_average_traces.pdf"), transparent=True)
 
 
-def plot_spatial(fish, img, com_clusters, savefig=False):
-    '''Plots all spatial components on a plane'''
-    mes_df = uuid_to_plane(load_mesmerize(fish))
-
+def plot_spatial_overlayed(fish, img, clusters=None, vmin=0, vmax=360, savefig=False):
+    '''
+    Plots spatial components of given clusters overlayed on an image
+    clusters: if None, will plot all clusters by default. if given a list, it will plot the clusters in the list. 
+    '''
     fig = plt.figure(figsize=(20, 20))
-    plt.imshow(img, cmap='gray')
+    plt.imshow(img, cmap='gray', vmin=vmin, vmax=vmax)
+
+    cmap = get_cmap('Set1')  # type: matplotlib.colors.ListedColormap
+    cmap2 = get_cmap('Accent')  # type: matplotlib.colors.ListedColormap
+    colors = cmap.colors + cmap2.colors  # type: list
+
+    for i, (cluster, coms) in enumerate(fish.clusters['com_clusters'].items()):
+        if clusters is None or (clusters is not None and cluster in clusters):
+            
+            for j, com in enumerate(coms):
+                if j == 0:  # add a label for the first component of each cluster
+                    plt.scatter(com[0]*2, com[1]*2, s=150, color=colors[i], label=cluster)
+                else:
+                    plt.scatter(com[0]*2, com[1]*2, s=150, color=colors[i])
+
+    plt.legend()
+            
+    if savefig:
+        plt.savefig(fish.exp_path.joinpath("clusters_spatial_overlayed.pdf"), transparent=True)
+
+
+def plot_spatial_individual(fish, img, clusters=None, vmin=0, vmax=360, distribution=False, savefig=False):
+    '''Plots spatial components of given clusters separately on individual images'''
+    com_clusters = dict()
+    if clusters is None:
+        com_clusters = fish.clusters['com_clusters']
+    else:
+        for cl in clusters:
+            com_clusters[cl] = fish.clusters['com_clusters'][cl]
+
+    # The number of rows and figure size depend on the number of clusters
+    n_cols = 2
+
+    if distribution:
+        # x-axis distribution plots require additional rows
+        n_rows = np.ceil(len(com_clusters) / n_cols) * 2
+    else:
+        n_rows = np.ceil(len(com_clusters) / n_cols)
+    
+    fig, axes = plt.subplots(int(n_rows), n_cols, sharex=True, figsize=(10, np.ceil(len(com_clusters) / n_cols) * 5), 
+                            height_ratios=[10, 1] * int(n_rows/2))
 
     cmap = get_cmap('Set1')  # type: matplotlib.colors.ListedColormap
     cmap2 = get_cmap('Accent')  # type: matplotlib.colors.ListedColormap
     colors = cmap.colors + cmap2.colors  # type: list
 
     for i, (cluster, coms) in enumerate(com_clusters.items()):
+        
+        if distribution:
+            if i % 2 == 0:
+                img_row = i
+                dist_row = i + 1
+            else:
+                img_row = i - 1
+                dist_row = i
+        else:
+            img_row = int(i / n_cols)
+        
+        axes[img_row, int(i % n_cols)].imshow(img, cmap='gray', vmin=vmin, vmax=vmax)
+        axes[img_row, int(i % n_cols)].title.set_text(cluster)
+        
+        coords = list()  # list of x coordinates if distribution is True
+        
         for com in coms:
-            plt.scatter(com[0]*2, com[1]*2, s=150, color=colors[i])
+            axes[img_row, int(i % n_cols)].scatter(com[0]*2, com[1]*2, s=50, color=colors[i])
             
+            if distribution:
+                coords.append(com[0]*2)
+        
+        if len(coords) > 1:
+            density = gaussian_kde(coords)
+            density.covariance_factor = lambda : .25
+            density._compute_covariance()
+
+            xs = np.linspace(0, img.shape[1], 200)
+
+            axes[dist_row, int(i % n_cols)].plot(xs, density(xs))
+
+    plt.subplots_adjust(hspace=0.2)
+
     if savefig:
-        plt.savefig(fish.exp_path.joinpath("clusters_spatial_all.pdf"), transparent=True)
+        plt.savefig(fish.exp_path.joinpath("clusters_spatial_individual.pdf"), transparent=True)
