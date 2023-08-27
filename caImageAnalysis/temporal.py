@@ -197,7 +197,7 @@ def cluster_temporal(fish, max_inter_cluster_dist, sort=True, savefig=False):
         # Actually sorted clusters
         clusters = {key: clusters[key] for key in sorted_keys}
         peak_clusters = {key: clusters[key] for key in sorted_peak_keys}
-        com_clusters = {key: com_clusters[key] for key in sorted_keys}
+        com_clusters = {key: com_clusters[key] for key in sorted_peak_keys}
     
     fish.clusters = {
         'max_inter_cluster_dist': max_inter_cluster_dist,
