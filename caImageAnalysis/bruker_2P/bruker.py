@@ -76,7 +76,11 @@ class BrukerFish(Fish):
                         
         if 'voltage_output' in self.data_paths.keys():
             self.voltage_output = VoltageOutput(self.data_paths['voltage_output'], self.data_paths['log'])
-            self.frametimes_df = self.voltage_output.align_pulses_to_frametimes(self.frametimes_df)
+            try:
+                self.frametimes_df = self.voltage_output.align_pulses_to_frametimes(self.frametimes_df)
+            except AttributeError:
+                # if this is the first time initializing, frametimes.txt might not have been created yet
+                pass
         
         if self.volumetric:
             self.data_paths['volumes'] = dict()
