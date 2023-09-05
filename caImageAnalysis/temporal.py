@@ -346,10 +346,19 @@ def plot_spatial_overlayed(fish, img, clusters=None, vmin=0, vmax=360, savefig=F
         if clusters is None or (clusters is not None and cluster in clusters):
             
             for j, com in enumerate(coms):
-                if j == 0:  # add a label for the first component of each cluster
-                    plt.scatter(com[0]*2, com[1]*2, s=150, color=colors[i], label=cluster)
-                else:
-                    plt.scatter(com[0]*2, com[1]*2, s=150, color=colors[i])
+                try:
+                    if j == 0:  # add a label for the first component of each cluster
+                        plt.scatter(com[0]*2, com[1]*2, s=150, color=colors[i], label=cluster)
+                    else:
+                        plt.scatter(com[0]*2, com[1]*2, s=150, color=colors[i])
+                
+                except IndexError:  # if we run out of colors
+                    colors += colors
+
+                    if j == 0:  # add a label for the first component of each cluster
+                        plt.scatter(com[0]*2, com[1]*2, s=150, color=colors[i], label=cluster)
+                    else:
+                        plt.scatter(com[0]*2, com[1]*2, s=150, color=colors[i])
 
     plt.legend()
             
@@ -400,7 +409,11 @@ def plot_spatial_individual(fish, img, clusters=None, vmin=0, vmax=360, distribu
         coords = list()  # list of x coordinates if distribution is True
         
         for com in coms:
-            axes[img_row, int(i % n_cols)].scatter(com[0]*2, com[1]*2, s=50, color=colors[i])
+            try:
+                axes[img_row, int(i % n_cols)].scatter(com[0]*2, com[1]*2, s=50, color=colors[i])
+            except IndexError:  # if we run out of colors
+                colors += colors
+                axes[img_row, int(i % n_cols)].scatter(com[0]*2, com[1]*2, s=50, color=colors[i])
             
             if distribution:
                 coords.append(com[0]*2)
