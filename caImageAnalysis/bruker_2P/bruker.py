@@ -31,6 +31,8 @@ class BrukerFish(Fish):
                         self.volumetric = True
                     elif entry.name == 'mesmerize-batch':
                         self.data_paths['mesmerize'] = Path(entry.path)
+                    elif entry.name == 'stytra':
+                        self.data_paths['stytra'] = Path(entry.path)
                     else:
                         self.data_paths['raw'] = Path(entry.path)
 
@@ -64,15 +66,14 @@ class BrukerFish(Fish):
                 for entry in entries:
                     if os.path.isdir(entry.path) and entry.name == 'References':
                         self.data_paths['references'] = Path(entry.path)
+                    elif entry.name == self.data_paths['raw'].name + '.xml':
+                        self.data_paths['log'] = Path(entry.path)
                     elif (entry.name.endswith('.xml')) and (not entry.name.startswith('.')):
-                        try:
-                            parsed = entry.name.split('_')
-                            if parsed[-2] == 'MarkPoints':
-                                self.data_paths['markpoints'] = Path(entry.path)
-                            elif parsed[-2] == 'VoltageOutput':
-                                self.data_paths['voltage_output'] = Path(entry.path)
-                        except IndexError:
-                            self.data_paths['log'] = Path(entry.path)
+                        parsed = entry.name.split('_')
+                        if parsed[-2] == 'MarkPoints':
+                            self.data_paths['markpoints'] = Path(entry.path)
+                        elif parsed[-2] == 'VoltageOutput':
+                            self.data_paths['voltage_output'] = Path(entry.path)
                         
         if 'voltage_output' in self.data_paths.keys():
             self.voltage_output = VoltageOutput(self.data_paths['voltage_output'], self.data_paths['log'])
