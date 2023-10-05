@@ -140,7 +140,11 @@ class BrukerFish(Fish):
                     file.write(str_final_time + '\n')
 
         self.raw_text_frametimes_to_df()
-        self.frametimes_df = self.voltage_output.align_pulses_to_frametimes(self.frametimes_df)
+        try:
+            self.frametimes_df = self.voltage_output.align_pulses_to_frametimes(self.frametimes_df)
+        except AttributeError:
+            print('no voltage output detected')
+
     
     def combine_channel_images(self, channel):
         '''Combines a channel's images'''
@@ -149,10 +153,9 @@ class BrukerFish(Fish):
             raise ValueError(f'channel needs to be one of {channels}')
 
         ch_image_paths = []
-        with os.scandir(self.data_paths['raw']) as entries:
-            for entry in entries:
-                if entry.name.endswith('.ome.tif') and channel in entry.name:
-                    ch_image_paths.append(Path(entry.path))
+        for entry in sorted(os.scandir(self.data_paths['raw']), key=lambda e: e.name):
+            if entry.name.endswith('.ome.tif') and channel in entry.name:
+                ch_image_paths.append(Path(entry.path))
 
         ch_images = [np.array(tifffile.imread(img_path)) for img_path in ch_image_paths]
         
