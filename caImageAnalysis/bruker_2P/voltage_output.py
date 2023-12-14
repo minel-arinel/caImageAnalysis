@@ -47,13 +47,25 @@ class VoltageOutput:
 
         Bs_log_data = BeautifulSoup(log)
 
-        start_time = Bs_log_data.find_all('sequence')[0]['time']  # start time of the experiment
-        start_time = round_microseconds(start_time)
-        dt_start_time = dt.strptime(start_time, '%H:%M:%S.%f')
+        first_line = Bs_log_data.find_all('pvscan')
+        str_time = first_line[0]['date'].split(' ')[1]  # start time of the experiment
+
+        dt_time = dt.strptime(str_time, '%H:%M:%S')
+
+        if first_line[0]['date'].split(' ')[2] == 'PM':
+            # datetime doesn't handle military time well
+            military_adjustment = timedelta(hours=12)
+            dt_time = dt_time + military_adjustment
+
+        frames = Bs_log_data.find_all('frame')
+        str_abstime = round_microseconds(frames[0]['absolutetime'])
+        dt_abstime = timedelta(seconds=int(str_abstime[:str_abstime.find('.')]),
+                                        microseconds=int(str_abstime[str_abstime.find('.')+1:]))
+        dt_start_time = dt_time + dt_abstime
 
         voltage_out_log = Bs_log_data.find_all('voltageoutput')[0]
         self.name = voltage_out_log['name']
-        if 'gavage' in self.name:
+        if 'gavage' or 'DOI' in self.name:
             # for gavage, injections occur only when voltage drops from 5V to 0V
             self.delta_V = -5  # we'll use this as change in voltage necessary for a 'successful output' 
         
