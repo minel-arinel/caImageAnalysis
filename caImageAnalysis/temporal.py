@@ -1,5 +1,6 @@
 import matplotlib.pyplot as plt
 from matplotlib.cm import get_cmap
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 import numpy as np
 import pandas as pd
 import random
@@ -31,7 +32,7 @@ def save_temporal(fish):
             planes.append(int(plane))
 
             fts = pd.read_hdf(fish.data_paths['volumes'][plane]['frametimes'])
-            pulses = [fts[fts.pulse == pulse].index.values[0] for pulse in fts.pulse.unique() if pulse != 0]
+            pulses = [fts[fts.pulse == pulse].index.values[0] for pulse in fts.pulse.unique() if pulse != fts.loc[0, 'pulse']]
             pulse_frames.append(pulses)
 
             temp = row.cnmf.get_temporal('good')
@@ -46,7 +47,7 @@ def save_temporal(fish):
     temporal_df.sort_values(by=['plane'], ignore_index=True, inplace=True)
     temporal_df.to_hdf(fish.exp_path.joinpath('temporal.h5'), key='temporal')
 
-    fish.process_filestructure()
+    fish.process_bruker_filestructure()
 
 
 def save_temporal_volume(fish, indices=None, key=None):
@@ -81,7 +82,7 @@ def save_temporal_volume(fish, indices=None, key=None):
     new_temp = np.concatenate(new_temp)
     save_pickle(new_temp, fish.exp_path.joinpath('vol_temporal.pkl'))
 
-    fish.process_filestructure()
+    fish.process_bruker_filestructure()
 
     return new_temp
 
@@ -232,18 +233,28 @@ def plot_temporal(fish, plane, indices=None, heatmap=False, key=None):
         axs = gs.subplots(sharex=True)
 
         for i, t in enumerate(temporal):
-            axs[i].plot(t)
+            axs[i].plot(t) # np.arange(len(t))/fish.fps, as x
             for pulse in row.pulse_frames:
                 axs[i].vlines(pulse, t.min(), t.max(), colors='r')
 
+        plt.xlabel('Time (s)')
+        
+        ticks = np.arange(0, 16*60*fish.fps, 60*fish.fps)
+        plt.xticks(ticks=ticks, labels=np.round(ticks/fish.fps).astype(int))
         plt.show()
 
     else:
         fig = plt.figure(figsize=(20, 20))
         plt.imshow(temporal, cmap='plasma', interpolation='nearest')
+        
+        ticks = np.arange(0, 16*60*fish.fps, 60*fish.fps)
+        plt.xticks(ticks=ticks, labels=np.round(ticks/fish.fps).astype(int))
+        
         for pulse in fish.get_pulse_frames():
-            plt.vlines(pulse, 0, len(temporal)-1, color='r')
+            plt.vlines(pulse/fish.fps, 0, len(temporal)-1, color='r')
+        
         plt.title(f'Plane {plane}: Temporal heatmap')
+        plt.xlabel('Time (s)')
         plt.show()
 
 
@@ -261,9 +272,15 @@ def plot_temporal_volume(fish, data=None, title=None, clusters=None, savefig=Fal
     if clusters is not None:
         fig, (ax1, ax2) = plt.subplots(1, 2, sharey=True, width_ratios=[20, 1], height_ratios=[1], figsize=(20, 10))
         ax1.imshow(data, cmap='plasma', interpolation='nearest', aspect='auto')
+        
+        ticks = np.arange(0, 16*60*fish.fps, 60*fish.fps)
+        ax1.set_xticks(ticks=ticks, labels=np.round(ticks/fish.fps).astype(int))
+        
         for pulse in fish.get_pulse_frames():
             ax1.vlines(pulse, -0.5, len(data)-0.5, color='r')
+        
         ax1.title.set_text(title)
+        ax1.set_xlabel('Time (s)')
 
         bottom = -0.5  # y-coordinates of the bottom side of the bar
         x = 0
@@ -284,11 +301,17 @@ def plot_temporal_volume(fish, data=None, title=None, clusters=None, savefig=Fal
 
     else:
         # Just simple heatmaps
-        fig = plt.figure(figsize=(20, 20))
-        plt.imshow(data, cmap='plasma', interpolation='nearest')
+        fig = plt.figure(figsize=(20, 10))
+        plt.imshow(data, cmap='plasma', interpolation='nearest', aspect='auto')
+        
+        ticks = np.arange(0, 16*60*fish.fps, 60*fish.fps)
+        plt.xticks(ticks=ticks, labels=np.round(ticks/fish.fps).astype(int))
+        
         for pulse in fish.get_pulse_frames():
-            plt.vlines(pulse, 0, len(data)-1, color='r')
+            plt.vlines(pulse, -0.5, len(data)-0.5, color='r')
+        
         plt.title(title)
+        plt.xlabel('Time (s)')
 
     if savefig:
         plt.savefig(fish.exp_path.joinpath("heatmap_clusters.pdf"), transparent=True)
@@ -306,6 +329,10 @@ def plot_representative_trace(fish, clusters, savefig=False):
         axes[i].title.set_text(cluster)
         for pulse in fish.get_pulse_frames():
             axes[i].vlines(pulse, 0, 1, color='r')
+
+    ticks = np.arange(0, 16*60*fish.fps, 60*fish.fps)
+    plt.xticks(ticks=ticks, labels=np.round(ticks/fish.fps).astype(int))
+    plt.xlabel('Time (s)')
 
     if savefig:    
         plt.savefig(fish.exp_path.joinpath("cluster_representative_traces.pdf"), transparent=True)
@@ -325,6 +352,10 @@ def plot_average_traces(fish, clusters, savefig=False):
         axes[i].title.set_text(cluster)
         for pulse in fish.get_pulse_frames():
             axes[i].vlines(pulse, 0, 1, color='r')
+
+    ticks = np.arange(0, 16*60*fish.fps, 60*fish.fps)
+    plt.xticks(ticks=ticks, labels=np.round(ticks/fish.fps).astype(int))
+    plt.xlabel('Time (s)')
 
     if savefig:
         plt.savefig(fish.exp_path.joinpath("cluster_average_traces.pdf"), transparent=True)
@@ -377,36 +408,21 @@ def plot_spatial_individual(fish, img, clusters=None, vmin=0, vmax=360, distribu
 
     # The number of rows and figure size depend on the number of clusters
     n_cols = 2
-
-    if distribution:
-        # x-axis distribution plots require additional rows
-        n_rows = np.ceil(len(com_clusters) / n_cols) * 2
-    else:
-        n_rows = np.ceil(len(com_clusters) / n_cols)
-    
-    fig, axes = plt.subplots(int(n_rows), n_cols, sharex=True, figsize=(10, np.ceil(len(com_clusters) / n_cols) * 5), 
-                            height_ratios=[10, 1] * int(n_rows/2))
+    n_rows = np.ceil(len(com_clusters) / n_cols)
+    fig, axes = plt.subplots(int(n_rows), n_cols, sharex=True, figsize=(15, np.ceil(len(com_clusters) / n_cols) * 5))
 
     cmap = get_cmap('Set1')  # type: matplotlib.colors.ListedColormap
     cmap2 = get_cmap('Accent')  # type: matplotlib.colors.ListedColormap
     colors = cmap.colors + cmap2.colors  # type: list
 
     for i, (cluster, coms) in enumerate(com_clusters.items()):
-        
-        if distribution:
-            if i % 2 == 0:
-                img_row = i
-                dist_row = i + 1
-            else:
-                img_row = i - 1
-                dist_row = i
-        else:
-            img_row = int(i / n_cols)
+        img_row = int(i / n_cols)
         
         axes[img_row, int(i % n_cols)].imshow(img, cmap='gray', vmin=vmin, vmax=vmax)
         axes[img_row, int(i % n_cols)].title.set_text(cluster)
         
-        coords = list()  # list of x coordinates if distribution is True
+        xcoords = list()  # list of x coordinates if distribution is True
+        ycoords = list() # list of y coordinates if distribution is True
         
         for com in coms:
             try:
@@ -415,19 +431,34 @@ def plot_spatial_individual(fish, img, clusters=None, vmin=0, vmax=360, distribu
                 colors += colors
                 axes[img_row, int(i % n_cols)].scatter(com[0]*2, com[1]*2, s=50, color=colors[i])
             
-            if distribution:
-                coords.append(com[0]*2)
+            xcoords.append(com[0]*2)
+            ycoords.append(com[1]*2)
         
-        if len(coords) > 1:
-            density = gaussian_kde(coords)
-            density.covariance_factor = lambda : .25
-            density._compute_covariance()
+        if distribution:
+            divider = make_axes_locatable(axes[img_row, int(i % n_cols)])
+            axbottom = divider.append_axes("bottom", size=0.8, pad=0.3, sharex=axes[img_row, int(i % n_cols)])
+            axleft = divider.append_axes("left", size=0.8, pad=0.4, sharey=axes[img_row, int(i % n_cols)])
+            
+            if len(xcoords) > 1:
+                xdensity = gaussian_kde(xcoords)
+                xdensity.covariance_factor = lambda : .25
+                xdensity._compute_covariance()
 
-            xs = np.linspace(0, img.shape[1], 200)
+                ydensity = gaussian_kde(ycoords)
+                ydensity.covariance_factor = lambda : .25
+                ydensity._compute_covariance()
 
-            axes[dist_row, int(i % n_cols)].plot(xs, density(xs))
+                xs = np.linspace(0, img.shape[1], 200)
+                ys = np.linspace(0, img.shape[0], 200)
 
-    plt.subplots_adjust(hspace=0.2)
+                axbottom.plot(xs, xdensity(xs))
+                axleft.plot(ydensity(ys), ys)
+
+                #adjust margins
+                axbottom.margins(x=0)
+                axleft.margins(y=0)
+
+    plt.tight_layout()
 
     if savefig:
         plt.savefig(fish.exp_path.joinpath("clusters_spatial_individual.pdf"), transparent=True)
