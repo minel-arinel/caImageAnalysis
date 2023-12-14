@@ -4,6 +4,7 @@ from caiman.source_extraction.cnmf import cnmf as cnmf
 from caiman.motion_correction import MotionCorrect
 import logging
 import numpy as np
+import pandas as pd
 import pickle
 
 from caImageAnalysis import BrukerFish, VolumeFish
@@ -12,7 +13,6 @@ from caImageAnalysis.utils import calculate_fps
 
 
 def caiman_mcorr(fish, plane=None, **opts_dict):
-    '''TODO: Implement it for non-volumetric recordings'''
     '''Motion correct a plane using NoRMCorre'''
     logging.basicConfig(format=
                         "%(relativeCreated)12d [%(filename)s:%(funcName)20s():%(lineno)s] [%(process)d] %(message)s",
@@ -21,11 +21,18 @@ def caiman_mcorr(fish, plane=None, **opts_dict):
 
     if plane is not None:
         img_path = [fish.data_paths['volumes'][str(plane)]['image']]
-        m_orig = cm.load_movie_chain(img_path)
+    elif 'rotated' in fish.data_paths.keys():
+        img_path = [fish.data_paths['rotated']]
     else:
-        raise ValueError('Give a plane index to run motion correction on')
+        img_path = [fish.data_paths['raw_image']]
+    
+    m_orig = cm.load_movie_chain(img_path)
 
-    fps = calculate_fps(fish.data_paths['volumes'][str(plane)]['frametimes'])
+    if fish.volumetric:
+        fps = calculate_fps(fish.data_paths['volumes'][str(plane)]['frametimes'])
+    else:
+        fps = calculate_fps(fish.data_paths['frametimes'])
+
     transient = 1  # in seconds; 1 for GCaMP8m, 1.5 for GCaMP6s
 
     # dataset dependent parameters
@@ -76,7 +83,7 @@ def caiman_mcorr(fish, plane=None, **opts_dict):
     if isinstance(fish, VolumeFish):
         fish.process_volumetric_filestructure()
     elif isinstance(fish, BrukerFish):
-        fish.process_bruker_filestructure()
+        fish.process_filestructure()
 
     return images
 
@@ -90,41 +97,50 @@ def caiman_cnmf(fish, plane=None, **opts_dict):
                         level=logging.WARNING)
 
     if plane is not None:
-        if 'mesmerize' in fish.data_paths.keys():
-            mes_df = load_mesmerize(fish)
-            input_movie_path = f'img_stack_{plane}/image.tif'
-
-            if input_movie_path in mes_df.input_movie_path.values:
-                idx = mes_df.input_movie_path.eq(input_movie_path).idxmax()
-                row = mes_df.iloc[idx]
-                input_movie_path = str(mes_df.paths.resolve(row.input_movie_path))
-                uuid = row.uuid
-
-                try:
-                    cm.stop_server(dview=dview)
-                except:
-                    pass
-                c, dview, n_processes = cm.cluster.setup_cluster(backend='local',
-                                                                 n_processes=None,
-                                                                 single_thread=False)
-
-                img_path = cm.save_memmap(
-                    [input_movie_path], base_name=f"{uuid}_cnmf-memmap_", order="C", dview=dview
-                )
-
-                _opts = row.params['main']
-
-            else:
-                raise ValueError(f'Plane {plane} is not in the Mesmerize dataframe')
-        else:
-            img_path = fish.data_paths['volumes'][str(plane)]['C_frames']
-            with open(fish.data_paths['opts'], 'rb') as fp:
-                _opts = pickle.load(fp)
-
-        Yr, dims, T = cm.load_memmap(img_path)
-        images = np.reshape(Yr.T, [T] + list(dims), order='F')
+        img_path = [fish.data_paths['volumes'][str(plane)]['image']]
+    elif 'rotated' in fish.data_paths.keys():
+        img_path = [fish.data_paths['rotated']]
     else:
-        raise ValueError('Give a plane index to run motion correction on')
+        img_path = [fish.data_paths['raw_image']]
+    
+    if plane is not None and 'mesmerize' in fish.data_paths.keys():
+        mes_df = load_mesmerize(fish)
+        input_movie_path = f'img_stack_{plane}/image.tif'
+
+        if input_movie_path in mes_df.input_movie_path.values:
+            idx = mes_df.input_movie_path.eq(input_movie_path).idxmax()
+            row = mes_df.iloc[idx]
+            input_movie_path = str(mes_df.paths.resolve(row.input_movie_path))
+            uuid = row.uuid
+
+            try:
+                cm.stop_server(dview=dview)
+            except:
+                pass
+            c, dview, n_processes = cm.cluster.setup_cluster(backend='local',
+                                                                n_processes=None,
+                                                                single_thread=False)
+
+            img_path = cm.save_memmap(
+                [input_movie_path], base_name=f"{uuid}_cnmf-memmap_", order="C", dview=dview
+            )
+
+            _opts = row.params['main']
+
+        else:
+            raise ValueError(f'Plane {plane} is not in the Mesmerize dataframe')
+    
+    else:
+        if plane is not None:
+            img_path = fish.data_paths['volumes'][str(plane)]['C_frames']
+        else:
+            img_path = str(fish.data_paths['C_frames'])
+        
+        with open(fish.data_paths['opts'], 'rb') as fp:
+            _opts = pickle.load(fp)
+
+    Yr, dims, T = cm.load_memmap(img_path, mode='r+')
+    images = np.reshape(Yr.T, [T] + list(dims), order='F')
 
     _opts['fnames'] = [str(img_path)]
 
