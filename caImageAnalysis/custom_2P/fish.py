@@ -140,6 +140,7 @@ class Fish:
         frametimes_df = pd.DataFrame(times)
         frametimes_df.rename({0: "time"}, axis=1, inplace=True)
         self.frametimes_df = frametimes_df
+        
         return frametimes_df
 
     def crop_flyback(self, crop=0.075):
@@ -148,6 +149,7 @@ class Fish:
         img_path = self.data_paths['raw_image'].parent.joinpath('img_cropped.tif')
         cropped = crop_image(image, path=img_path, crop=crop)
         self.data_paths['cropped'] = img_path
+        
         return cropped
 
     def rotate_image(self, img_path, angle=0):
