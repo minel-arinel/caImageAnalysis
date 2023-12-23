@@ -26,7 +26,10 @@ class BrukerFish(Fish):
         self.volumetric = self.check_volumetric()
 
         if self.volumetric:
-            self.fps = calculate_fps(self.data_paths['volumes']['0']['frametimes'])
+            try:
+                self.fps = calculate_fps(self.data_paths['volumes']['0']['frametimes'])
+            except KeyError:
+                pass
         else:
             self.fps = calculate_fps(self.data_paths['frametimes'])
 
@@ -205,7 +208,7 @@ class BrukerFish(Fish):
                 if 'anatomy' in frame['parameterset']:  # if the anatomy stack starts
                     break
                 else:
-                    str_abstime = round_microseconds(frame['absolutetime'])
+                    str_abstime = round_microseconds(frame['relativetime'])
                     dt_abstime = timedelta(seconds=int(str_abstime[:str_abstime.find('.')]),
                                         microseconds=int(str_abstime[str_abstime.find('.')+1:]))
                     str_final_time = dt.strftime(dt_time + dt_abstime, '%H:%M:%S.%f')
