@@ -1,5 +1,6 @@
 import matplotlib.pyplot as plt
 from matplotlib.cm import get_cmap
+import matplotlib.ticker as ticker
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import numpy as np
 import pandas as pd
@@ -12,14 +13,17 @@ from .utils import save_pickle
 
 
 def save_temporal(fish):
-    '''Saves the temporal components of final ROIs as a temporal.h5 file'''
+    '''Saves the temporal components of final ROIs as a temporal.h5 file
+    Also calculates the dF/F0 and adds it to the dataframe'''
     mes_df = uuid_to_plane(load_mesmerize(fish))
     final_rois = load_rois(fish)
 
-    planes = []
-    temporal = []
-    roi_indices = []
-    pulse_frames = []
+    planes = list()
+    raw_temporal = list()
+    temporal = list()
+    raw_dff = list()
+    roi_indices = list()
+    pulse_frames = list()
 
     for i, row in mes_df.iterrows():
         if row.algo == 'cnmf':
@@ -31,17 +35,29 @@ def save_temporal(fish):
             plane = name[name.rfind('_')+1:]
             planes.append(int(plane))
 
+            indices = final_rois[name]
+            roi_indices.append(indices)
+
+            raw_temp = row.cnmf.get_temporal("good", add_residuals=True)  # raw temporal responses: C+YrA
+            raw_temporal.append(raw_temp[indices])
+            
+            temp = row.cnmf.get_temporal('good')  # denoised temporal responses: C
+            temporal.append(temp[indices])
+
+            row.cnmf.run_detrend_dfof()  # uses caiman's detrend_df_f function
+            F_dff = row.cnmf.get_detrend_dfof("good")  # detrended dF/F0 curves
+            raw_dff.append(F_dff[indices])
+
             fts = pd.read_hdf(fish.data_paths['volumes'][plane]['frametimes'])
             pulses = [fts[fts.pulse == pulse].index.values[0] for pulse in fts.pulse.unique() if pulse != fts.loc[0, 'pulse']]
             pulse_frames.append(pulses)
 
-            temp = row.cnmf.get_temporal('good')
-            indices = final_rois[name]
-            temporal.append(temp[indices])
-            roi_indices.append(indices)
+            print(f'finished plane {plane}')
 
     temporal_df = pd.DataFrame({'plane': planes,
+                                'raw_temporal': raw_temporal,
                                 'temporal': temporal,
+                                'raw_dff': raw_dff,
                                 'roi_indices': roi_indices,
                                 'pulse_frames': pulse_frames})
     temporal_df.sort_values(by=['plane'], ignore_index=True, inplace=True)
@@ -87,8 +103,9 @@ def save_temporal_volume(fish, indices=None, key=None):
     return new_temp
 
 
-def compute_dff(fish):
-    '''Computes the dF/F signal for each component'''
+def compute_median_dff(fish):
+    '''Computes the dF/F signal for each component manually by using the signal median.
+    Finds the baseline period as the time before the first pulse and takes the median as F0'''
     fish.temporal_df['dff'] = None
 
     for i, row in fish.temporal_df.iterrows():
@@ -188,7 +205,7 @@ def cluster_temporal(fish, max_inter_cluster_dist, sort=True, savefig=False):
     plt.show()
 
     if savefig:
-        plt.savefig(fish.exp_path.joinpath("hierarchical_clustering.pdf"), transparent=True)
+        plt.savefig(fish.exp_path.joinpath(f"hierarchical_clustering_{max_inter_cluster_dist}.pdf"), transparent=True)
     
     if sort:  
         # Sorted cluster keys      
@@ -217,10 +234,8 @@ def plot_temporal(fish, plane, indices=None, heatmap=False, key=None):
     '''Plots individual temporal components of a plane'''
     row = fish.temporal_df[fish.temporal_df.plane == plane].iloc[0]
 
-    if key == 'dff':
-        temporal = np.array(row.dff)
-    elif key == 'norm_dff':
-        temporal = np.array(row.norm_dff)
+    if key is not None:
+        temporal = np.array(row[key])
     else:
         temporal = row.temporal
 
@@ -436,8 +451,8 @@ def plot_spatial_individual(fish, img, clusters=None, vmin=0, vmax=360, distribu
         
         if distribution:
             divider = make_axes_locatable(axes[img_row, int(i % n_cols)])
-            axbottom = divider.append_axes("bottom", size=0.8, pad=0.3, sharex=axes[img_row, int(i % n_cols)])
-            axleft = divider.append_axes("left", size=0.8, pad=0.4, sharey=axes[img_row, int(i % n_cols)])
+            axtop = divider.append_axes("top", size=0.5, pad=0.3, sharex=axes[img_row, int(i % n_cols)])
+            axright = divider.append_axes("right", size=0.5, pad=0.4, sharey=axes[img_row, int(i % n_cols)])
             
             if len(xcoords) > 1:
                 xdensity = gaussian_kde(xcoords)
@@ -451,14 +466,128 @@ def plot_spatial_individual(fish, img, clusters=None, vmin=0, vmax=360, distribu
                 xs = np.linspace(0, img.shape[1], 200)
                 ys = np.linspace(0, img.shape[0], 200)
 
-                axbottom.plot(xs, xdensity(xs))
-                axleft.plot(ydensity(ys), ys)
+                axtop.plot(xs, xdensity(xs))
+                axtop.xaxis.set_major_locator(ticker.NullLocator())
+                axright.plot(ydensity(ys), ys)
 
                 #adjust margins
-                axbottom.margins(x=0)
-                axleft.margins(y=0)
+                axtop.margins(x=0)
+                axright.margins(y=0)
 
     plt.tight_layout()
 
     if savefig:
         plt.savefig(fish.exp_path.joinpath("clusters_spatial_individual.pdf"), transparent=True)
+
+
+def find_stimulus_responsive(fish, pre_frame_num=4, post_frame_num=13, key=None):
+    '''Identifies stimulus responsive neurons
+    pre_frame_num: number of frames before the pulse. 4 frames is ~3 seconds
+    post_frame_num: number of frames after the pulse. 13 frames is ~10 seconds
+    '''
+    if key is None:
+        key = 'norm_dff'
+
+    neurons = list()
+    pulse_frames=list()
+
+    for i, row in fish.temporal_df.iterrows():
+        neurons.extend(row[key])
+
+        for j in range(len(row[key])):  # add pulse frames for each neuron in each plane
+            pulse_frames.append(row['pulse_frames'])
+
+    stim_responsive_neurons = list()  # list of neuron indices that are selected to be stimulus responsive
+    for i, neuron in enumerate(neurons):
+        pulses = pulse_frames[i]
+        traces = list()
+
+        for pulse in pulses:
+            start_frame = pulse - pre_frame_num  # when the neuron traces will start
+            stop_frame = pulse + post_frame_num  # when the neuron traces will end
+
+            trace = neuron[start_frame:stop_frame+1]
+            traces.append(trace)
+            
+        avg_trace = np.array(traces).mean(axis=0)
+
+        # To determine if a neuron is stimulus responsive, we will first calculate
+        # the standard deviation of "pre".
+        pre_stdev = np.array(traces)[:, :pre_frame_num].std()
+
+        # Excitatory neurons: If the peak response in "post" is bigger
+        # than 1.8 times the "pre" standard deviation, the neuron is stimulus 
+        # responsive
+        peak_response = avg_trace[pre_frame_num:].max()
+        if peak_response >= np.array(traces)[:, :pre_frame_num].mean() + 1.8 * pre_stdev and peak_response > 0.1:
+            stim_responsive_neurons.append(i)
+            print(f'neuron {i} is excitatory stimulus responsive')
+
+        # Inhibitory neurons: If the minimum response in "post" is smaller
+        # than 1.8 times the "pre" standard deviation, the neuron is stimulus 
+        # responsive
+        min_response = avg_trace[pre_frame_num:].min()
+        if min_response <= np.array(traces)[:, :pre_frame_num].mean() - 1.8 * pre_stdev:
+            stim_responsive_neurons.append(i)
+            print(f'neuron {i} is inhibitory stimulus responsive')
+
+    print(f'{len(stim_responsive_neurons)} out of {len(neurons)} neurons is stimulus responsive: {len(stim_responsive_neurons)/len(neurons)*100}%')
+
+    return stim_responsive_neurons
+
+
+def plot_neuron_pulse_average(fish, pre_frame_num=4, post_frame_num=13, key=None, savefig=False):
+    '''Plots the average response of each neuron to the pulses'''
+    stim_responsive_neurons = find_stimulus_responsive(fish, pre_frame_num=pre_frame_num, post_frame_num=post_frame_num, key=key)
+    
+    if key is None:
+        key = 'norm_dff'
+
+    neurons = list()
+    pulse_frames=list()
+
+    for i, row in fish.temporal_df.iterrows():
+        neurons.extend(row[key])
+
+        for j in range(len(row[key])):  # add pulse frames for each neuron in each plane
+            pulse_frames.append(row['pulse_frames'])
+
+    n_cols = 3
+    n_rows = np.ceil(len(neurons) / n_cols)
+    fig, axes = plt.subplots(int(n_rows), n_cols, sharex=True, sharey=True, figsize=(15, np.ceil(len(neurons) / n_cols) * 5), layout='constrained')
+
+    for i, neuron in enumerate(neurons):
+        img_row = int(i / n_cols)
+
+        pulses = pulse_frames[i]
+        traces = list()
+
+        for pulse in pulses:
+            start_frame = pulse - pre_frame_num  # when the neuron traces will start
+            stop_frame = pulse + post_frame_num  # when the neuron traces will end
+
+            trace = neuron[start_frame:stop_frame+1]
+            traces.append(trace)
+
+            axes[img_row, int(i % n_cols)].plot(trace, 'lightgray')
+            
+        avg_trace = np.array(traces).mean(axis=0)
+        sems = sem(np.array(traces), axis=0)
+        x = np.arange(pre_frame_num+post_frame_num+1)
+
+        axes[img_row, int(i % n_cols)].plot(x, avg_trace)
+        axes[img_row, int(i % n_cols)].fill_between(x, avg_trace-sems, avg_trace+sems, alpha=0.2)
+        axes[img_row, int(i % n_cols)].axvline(pre_frame_num, color='red', lw=2)
+        axes[img_row, int(i % n_cols)].set_title(str(i))
+
+        if i in stim_responsive_neurons:
+            axes[img_row, int(i % n_cols)].tick_params(color='red', labelcolor='red')
+            for spine in axes[img_row, int(i % n_cols)].spines.values():
+                spine.set_edgecolor('red')
+
+    fig.supxlabel('Frame')
+    plt.figtext(0.02, 1, f'{len(stim_responsive_neurons)} out of {len(neurons)} neurons is stimulus responsive: {len(stim_responsive_neurons)/len(neurons)*100}%', fontsize=14)    
+
+    if savefig:
+        plt.savefig(fish.exp_path.joinpath("neuron_pulse_averages.pdf"), transparent=True, bbox_inches="tight")
+    
