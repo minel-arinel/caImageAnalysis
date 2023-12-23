@@ -58,7 +58,7 @@ class VoltageOutput:
             dt_time = dt_time + military_adjustment
 
         frames = Bs_log_data.find_all('frame')
-        str_abstime = round_microseconds(frames[0]['absolutetime'])
+        str_abstime = round_microseconds(frames[0]['relativetime'])
         dt_abstime = timedelta(seconds=int(str_abstime[:str_abstime.find('.')]),
                                         microseconds=int(str_abstime[str_abstime.find('.')+1:]))
         dt_start_time = dt_time + dt_abstime
@@ -69,7 +69,7 @@ class VoltageOutput:
             # for gavage, injections occur only when voltage drops from 5V to 0V
             self.delta_V = -5  # we'll use this as change in voltage necessary for a 'successful output' 
         
-        abstime = round_microseconds(voltage_out_log['absolutetime'])  # start time of the voltage output
+        abstime = round_microseconds(voltage_out_log['relativetime'])  # start time of the voltage output
         dt_abstime = timedelta(seconds=int(abstime[:abstime.find('.')]),
                                         microseconds=int(abstime[abstime.find('.')+1:]))
         dt_start_vo_time = dt_start_time + dt_abstime  # start time of the voltage output as a datetime
