@@ -3,12 +3,14 @@ from matplotlib.cm import get_cmap
 import matplotlib.ticker as ticker
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import numpy as np
+import os
 import pandas as pd
 import random
 import scipy.cluster.hierarchy as sch
+from scipy.signal import find_peaks
 from scipy.stats import sem, gaussian_kde
 
-from .mesm import load_mesmerize, load_rois, uuid_to_plane
+from .mesm import get_plane_number, load_mesmerize, load_rois, uuid_to_plane
 from .utils import save_pickle
 
 
@@ -32,7 +34,7 @@ def save_temporal(fish):
             if name not in final_rois.keys():
                 continue
 
-            plane = name[name.rfind('_')+1:]
+            plane = get_plane_number(row)
             planes.append(int(plane))
 
             indices = final_rois[name]
@@ -103,17 +105,23 @@ def save_temporal_volume(fish, indices=None, key=None):
     return new_temp
 
 
-def compute_median_dff(fish):
+def compute_median_dff(fish, window=None):
     '''Computes the dF/F signal for each component manually by using the signal median.
-    Finds the baseline period as the time before the first pulse and takes the median as F0'''
+    F0 is calculated as the baseline median.
+    If a window is an integer n, calculates baseline as the first n frames.
+    If window is None, calculates baseline as the time before the first pulse.'''
     fish.temporal_df['dff'] = None
 
     for i, row in fish.temporal_df.iterrows():
         pulse_0 = row.pulse_frames[0]
-        dffs = []
+        dffs = list()
 
-        for comp in row.temporal:
-            baseline = comp[:pulse_0]
+        for comp in row.temporal:  # for each component
+            if window is None:
+                baseline = comp[:pulse_0]
+            else:
+                baseline = comp[:window]
+            
             f0 = np.median(baseline)
             dff = (comp - f0)/abs(f0)
             dffs.append(dff)
@@ -130,7 +138,7 @@ def normalize_dff(fish):
     fish.temporal_df['norm_dff'] = None
 
     for i, row in fish.temporal_df.iterrows():
-        norm_dffs = []
+        norm_dffs = list()
 
         for comp in row.dff:
             norm_dff = (comp - min(comp)) / (max(comp) - min(comp))
@@ -591,3 +599,36 @@ def plot_neuron_pulse_average(fish, pre_frame_num=4, post_frame_num=13, key=None
     if savefig:
         plt.savefig(fish.exp_path.joinpath("neuron_pulse_averages.pdf"), transparent=True, bbox_inches="tight")
     
+
+def find_twitches(fish, plot=False, **kwargs):
+    '''Finds twitch events using x and y shifts from motion correction
+    prominence: prominence of shift peaks to determine twitch events'''
+    mes_df = uuid_to_plane(load_mesmerize(fish))
+
+    all_peaks = dict()  # stores all the peaks for each plane
+
+    for i, row in mes_df.iterrows():
+        if row.algo == 'mcorr':
+            # Get the shifts manually instead of using mesmerize's get_shifts() function because it returns it weird
+            x_shifts, y_shifts = np.load(os.path.join(fish.data_paths['mesmerize'], row.outputs['shifts']))
+            
+            # Calculate the total shifts per frame as the sum of all x and y shifts
+            shifts = np.sum(np.abs(x_shifts), axis=1) + np.sum(np.abs(y_shifts), axis=1)
+            peaks, _ = find_peaks(shifts, **kwargs)
+
+            plane = get_plane_number(row)
+            all_peaks[plane] = peaks
+
+            if plot:
+                
+                pulse_frames = fish.temporal_df.loc[int(plane), 'pulse_frames']
+
+                fig = plt.figure(figsize=(10, 5))
+                plt.plot(np.sum(np.abs(x_shifts), axis=1), label='x_shifts')
+                plt.plot(np.sum(np.abs(y_shifts), axis=1), label='y_shifts')
+                plt.plot(shifts, label='total_shifts')
+                plt.plot(peaks, shifts[peaks], "x", label='twitch')
+                plt.title(f'plane {plane} - twitch frames: {peaks} - pulse frames: {pulse_frames}')
+                plt.legend()
+
+    return all_peaks

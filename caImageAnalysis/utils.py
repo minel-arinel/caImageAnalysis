@@ -105,3 +105,12 @@ def load_pickle(path):
     with open(path, 'rb') as p_file:
         p = pickle.load(p_file)
     return p
+
+
+def get_image_around_frame(img, frame, n_frames_pre=3, n_frames_post=3):
+    '''Visualizes around a given frame number of an image
+    This can be used to confirm pulse injections or twitch events
+    n_frames_pre: number of frames to visualize before the given frame
+    n_frames_post: number of frames to visualize after the given frame'''
+    
+    return img[frame-n_frames_pre:frame+n_frames_post+1]

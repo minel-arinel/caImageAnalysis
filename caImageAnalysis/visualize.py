@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 from tifffile import memmap
 
+from .utils import get_image_around_frame
+
 
 def visualize_images(imgs=list(), path=None, names=None):
     '''Visualize a list of images within the same plot using ImageWidget'''
@@ -325,3 +327,37 @@ def euclidean(source, target, event, new_data):
     target._set_feature(feature="colors", new_data=new_data, indices=ix)
 
     return None
+
+
+def visualize_around_frame(fish, frame, plane, **kwargs):
+    '''Visualizes around a given frame number on a given plane
+    This can be used to confirm pulse injections or twitch events'''
+    if isinstance(plane, int):
+        plane = str(plane)
+
+    img = memmap(fish.data_paths['volumes'][plane]['image'])
+    new_img = get_image_around_frame(img, frame, **kwargs)
+
+    iw = visualize_images(imgs=[new_img], names=[f'frame {frame}'])
+    return iw
+
+
+def visualize_around_frame_multiple(fish, frames, **kwargs):
+    '''Visualizes around given frame numbers on given planes
+    This can be used to confirm pulse injections or twitch events on different planes
+    frames: needs to be a dictionary in the format -> plane: list of frames'''
+    imgs = list()
+    names = list()
+
+    for plane in frames.keys():
+        if isinstance(plane, int):
+            plane = str(plane)
+
+        for frame in frames[plane]:
+            img = memmap(fish.data_paths['volumes'][plane]['image'])
+            new_img = get_image_around_frame(img, frame, **kwargs)
+            imgs.append(new_img)
+            names.append(f'plane {plane}, frame {frame}')
+
+    iw = visualize_images(imgs=imgs, names=names)
+    return iw

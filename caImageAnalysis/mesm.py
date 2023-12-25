@@ -702,3 +702,8 @@ def plot_single_rois(row, indices):
             axs[int(i % n_cols)].set_ylim([y, 0])
 
     plt.show()
+
+
+def get_plane_number(row):
+    '''Gets the plane number from the item_name on a mesmerize dataframe'''
+    return row.item_name[row.item_name.rfind('_')+1:]
