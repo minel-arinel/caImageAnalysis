@@ -252,7 +252,7 @@ class BrukerFish(Fish):
             ch_image_path = Path(os.path.join(self.exp_path, f'{self.region}_{channel.lower()}.tif'))
         else:
             ch_image_path = Path(os.path.join(self.exp_path, f'{channel.lower()}.tif'))
-        tifffile.imwrite(ch_image_path, raw_img)
+        tifffile.imsave(ch_image_path, raw_img, bigtiff=True)
 
         self.data_paths['raw_image'] = ch_image_path
 
@@ -293,7 +293,7 @@ class BrukerFish(Fish):
                 plane_img = img[plane*len_plane:(plane+1)*len_plane]
                 plane_frametimes = self.frametimes_df[plane*len_plane:(plane+1)*len_plane].copy()
             
-            tifffile.imwrite(os.path.join(plane_folder_path, 'image.tif'), plane_img)
+            tifffile.imsave(os.path.join(plane_folder_path, 'image.tif'), plane_img, bigtiff=True)
 
             plane_frametimes = plane_frametimes.reset_index(drop=True)
             plane_frametimes.to_hdf(os.path.join(plane_folder_path, 'frametimes.h5'), 'frametimes')
