@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 
 
 install_requires = [
-    'bs4>=4.12.2',
+    'bs4==4.12.2',
     'fastplotlib==0.1.0.a8',
     'ipywidgets==7.7.2',
     'jupyterlab-widgets==1.1.1',
@@ -25,6 +25,6 @@ setup(
     author_email='minelarinel@gmail.com', 
     url='https://github.com/minel-arinel/caImageAnalysis',
     packages=find_packages(),
-    python_requires='>=3.10',
+    python_requires='==3.10',
     install_requires=install_requires,
 )
