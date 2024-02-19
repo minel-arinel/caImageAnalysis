@@ -4,11 +4,14 @@ from setuptools import setup, find_packages
 
 install_requires = [
     'bs4==4.12.2',
+    'caiman==1.9.15',
     'fastplotlib==0.1.0.a8',
     'ipywidgets==7.7.2',
     'jupyterlab-widgets==1.1.1',
+    'mesmerize_core==0.2.2',
     'pygfx==0.1.10',
     'qtconsole==5.4.0',
+    'tifffile==2023.7.18',
     'wgpu==0.8.4'
 ]
 
