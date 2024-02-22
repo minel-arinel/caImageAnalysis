@@ -134,17 +134,24 @@ def compute_median_dff(fish, window=None):
 
 
 def normalize_dff(fish):
-    '''Normalizes each dF/F signal between 0 and 1'''
+    '''Normalizes both the raw and denoised dF/F signals between 0 and 1'''
     fish.temporal_df['norm_dff'] = None
+    fish.temporal_df['raw_norm_dff'] = None
 
     for i, row in fish.temporal_df.iterrows():
         norm_dffs = list()
+        raw_norm_dffs = list()
 
         for comp in row.dff:
             norm_dff = (comp - min(comp)) / (max(comp) - min(comp))
             norm_dffs.append(norm_dff)
 
+        for comp in row.raw_dff:
+            raw_norm_dff = (comp - min(comp)) / (max(comp) - min(comp))
+            raw_norm_dffs.append(raw_norm_dff)
+
         fish.temporal_df['norm_dff'][i] = norm_dffs
+        fish.temporal_df['raw_norm_dff'][i] = raw_norm_dffs
 
     fish.temporal_df.to_hdf(fish.exp_path.joinpath('temporal.h5'), key='temporal')
 
