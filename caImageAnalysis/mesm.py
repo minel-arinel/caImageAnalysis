@@ -460,12 +460,20 @@ def remove_xy(fish, indices=None, xy_cutoff=25):
     fig = plt.figure(figsize=(10, 20), constrained_layout=True)
     gs = fig.add_gridspec(len(cnmf_df), 2)
     axs = gs.subplots()
+    
     for i, row in cnmf_df.iterrows():
         movie = row.caiman.get_input_movie()
         t, y, x = movie.shape
-        axs[i, 0].imshow(movie[0])
-        axs[i, 1].imshow(movie[0])
-        axs[i, 0].set_title(f'{row.item_name}: Before')
+
+        if len(cnmf_df) > 1:
+            axs[i, 0].imshow(movie[0])
+            axs[i, 1].imshow(movie[0])
+            axs[i, 0].set_title(f'{row.item_name}: Before')
+        else:
+            axs[0].imshow(movie[0])
+            axs[1].imshow(movie[0])
+            axs[0].set_title(f'{row.item_name}: Before')
+
         _, coms = row.cnmf.get_contours('good', swap_dim=False)
         coms = np.array(coms)
 
@@ -478,17 +486,34 @@ def remove_xy(fish, indices=None, xy_cutoff=25):
 
         for ix in ixs:
             com = coms[ix]
-            axs[i, 0].scatter(com[0], com[1])
+
+            if len(cnmf_df) > 1:
+                axs[i, 0].scatter(com[0], com[1])
+            else:
+                axs[0].scatter(com[0], com[1])
+
             if com[0] >= xy_cutoff and com[1] >= xy_cutoff:
                 if com[0] < x-xy_cutoff and com[1] < y-xy_cutoff:
                     _ixs.append(ix)
-                    axs[i, 1].scatter(com[0], com[1])
+                    
+                    if len(cnmf_df) > 1:
+                        axs[i, 1].scatter(com[0], com[1])
+                    else:
+                        axs[1].scatter(com[0], com[1])
+                    
+        if len(cnmf_df) > 1:
+            axs[i, 0].set_xlim([0, x])
+            axs[i, 0].set_ylim([y, 0])
+            axs[i, 1].set_xlim([0, x])
+            axs[i, 1].set_ylim([y, 0])
+            axs[i, 1].set_title(f'{row.item_name}: After xy_cutoff')
+        else:
+            axs[0].set_xlim([0, x])
+            axs[0].set_ylim([y, 0])
+            axs[1].set_xlim([0, x])
+            axs[1].set_ylim([y, 0])
+            axs[1].set_title(f'{row.item_name}: After xy_cutoff')
 
-        axs[i, 0].set_xlim([0, x])
-        axs[i, 0].set_ylim([y, 0])
-        axs[i, 1].set_xlim([0, x])
-        axs[i, 1].set_ylim([y, 0])
-        axs[i, 1].set_title(f'{row.item_name}: After xy_cutoff')
         good_rois[row.item_name] = np.array(_ixs)
     plt.show()
 
@@ -509,12 +534,20 @@ def remove_low_t(fish, indices=None, peak_cutoff=100):
     fig = plt.figure(figsize=(10, 20), constrained_layout=True)
     gs = fig.add_gridspec(len(cnmf_df), 2)
     axs = gs.subplots()
+
     for i, row in cnmf_df.iterrows():
         movie = row.caiman.get_input_movie()
         t, y, x = movie.shape
-        axs[i, 0].imshow(movie[0])
-        axs[i, 1].imshow(movie[0])
-        axs[i, 0].set_title(f'{row.item_name}: Before')
+
+        if len(cnmf_df) > 1:
+            axs[i, 0].imshow(movie[0])
+            axs[i, 1].imshow(movie[0])
+            axs[i, 0].set_title(f'{row.item_name}: Before')
+        else:
+            axs[0].imshow(movie[0])
+            axs[1].imshow(movie[0])
+            axs[0].set_title(f'{row.item_name}: Before')
+        
         _, coms = row.cnmf.get_contours('good', swap_dim=False)
         coms = np.array(coms)
         temporal = row.cnmf.get_temporal('good')
@@ -528,16 +561,33 @@ def remove_low_t(fish, indices=None, peak_cutoff=100):
 
         for ix in ixs:
             com = coms[ix]
-            axs[i, 0].scatter(com[0], com[1])
+
+            if len(cnmf_df) > 1:
+                axs[i, 0].scatter(com[0], com[1])
+            else:
+                axs[0].scatter(com[0], com[1])
+            
             if temporal[ix].max() > peak_cutoff:
                 _ixs.append(ix)
-                axs[i, 1].scatter(com[0], com[1])
 
-        axs[i, 0].set_xlim([0, x])
-        axs[i, 0].set_ylim([y, 0])
-        axs[i, 1].set_xlim([0, x])
-        axs[i, 1].set_ylim([y, 0])
-        axs[i, 1].set_title(f'{row.item_name}: After peak_cutoff')
+                if len(cnmf_df) > 1:
+                    axs[i, 1].scatter(com[0], com[1])
+                else:
+                    axs[1].scatter(com[0], com[1])
+
+        if len(cnmf_df) > 1:
+            axs[i, 0].set_xlim([0, x])
+            axs[i, 0].set_ylim([y, 0])
+            axs[i, 1].set_xlim([0, x])
+            axs[i, 1].set_ylim([y, 0])
+            axs[i, 1].set_title(f'{row.item_name}: After peak_cutoff')
+        else:
+            axs[0].set_xlim([0, x])
+            axs[0].set_ylim([y, 0])
+            axs[1].set_xlim([0, x])
+            axs[1].set_ylim([y, 0])
+            axs[1].set_title(f'{row.item_name}: After peak_cutoff')
+        
         good_rois[row.item_name] = np.array(_ixs)
     plt.show()
 
@@ -570,12 +620,20 @@ def remove_close_dist(fish, indices=None, dist_cutoff=100):
     fig = plt.figure(figsize=(10, 20), constrained_layout=True)
     gs = fig.add_gridspec(len(cnmf_df), 2)
     axs = gs.subplots()
+    
     for i, row in cnmf_df.iterrows():
         movie = row.caiman.get_input_movie()
         t, y, x = movie.shape
-        axs[i, 0].imshow(movie[0])
-        axs[i, 1].imshow(movie[0])
-        axs[i, 0].set_title(f'{row.item_name}: Before')
+
+        if len(cnmf_df) > 1:
+            axs[i, 0].imshow(movie[0])
+            axs[i, 1].imshow(movie[0])
+            axs[i, 0].set_title(f'{row.item_name}: Before')
+        else:
+            axs[0].imshow(movie[0])
+            axs[1].imshow(movie[0])
+            axs[0].set_title(f'{row.item_name}: Before')
+
         _, coms = row.cnmf.get_contours('good', swap_dim=False)
         coms = np.array(coms)
         temporal = row.cnmf.get_temporal('good')
@@ -618,25 +676,45 @@ def remove_close_dist(fish, indices=None, dist_cutoff=100):
 
             for ix in ixs:
                 com = coms[ix]
-                axs[i, 0].scatter(com[0], com[1])
+
+                if len(cnmf_df) > 1:
+                    axs[i, 0].scatter(com[0], com[1])
+                else:
+                    axs[0].scatter(com[0], com[1])
+                
                 if ix in _ixs:
-                    axs[i, 1].scatter(com[0], com[1])
+                    if len(cnmf_df) > 1:
+                        axs[i, 1].scatter(com[0], com[1])
+                    else:
+                        axs[1].scatter(com[0], com[1])
 
             good_rois[row.item_name] = np.array(_ixs)
 
         else:
             for ix in ixs:
                 com = coms[ix]
-                axs[i, 0].scatter(com[0], com[1])
-                axs[i, 1].scatter(com[0], com[1])
+
+                if len(cnmf_df) > 1:
+                    axs[i, 0].scatter(com[0], com[1])
+                    axs[i, 1].scatter(com[0], com[1])
+                else:
+                    axs[0].scatter(com[0], com[1])
+                    axs[1].scatter(com[0], com[1])
+            
             good_rois[row.item_name] = np.array(ixs)
 
-
-        axs[i, 0].set_xlim([0, x])
-        axs[i, 0].set_ylim([y, 0])
-        axs[i, 1].set_xlim([0, x])
-        axs[i, 1].set_ylim([y, 0])
-        axs[i, 1].set_title(f'{row.item_name}: After dist_cutoff')
+        if len(cnmf_df) > 1:
+            axs[i, 0].set_xlim([0, x])
+            axs[i, 0].set_ylim([y, 0])
+            axs[i, 1].set_xlim([0, x])
+            axs[i, 1].set_ylim([y, 0])
+            axs[i, 1].set_title(f'{row.item_name}: After dist_cutoff')
+        else:
+            axs[0].set_xlim([0, x])
+            axs[0].set_ylim([y, 0])
+            axs[1].set_xlim([0, x])
+            axs[1].set_ylim([y, 0])
+            axs[1].set_title(f'{row.item_name}: After dist_cutoff')
 
     plt.show()
 
@@ -667,9 +745,9 @@ def load_rois(fish):
 def plot_single_rois(row, indices):
     '''Plots individual ROIs of a given plane'''
     fig_height = 720
-    n_cols = 5
+    n_cols = 7
     px = 1/plt.rcParams['figure.dpi']
-    fig = plt.figure(figsize=(800*px, 2400*px), constrained_layout=True)
+    fig = plt.figure(figsize=(1000*px, 200*ceil(len(indices)/n_cols)*px), constrained_layout=True)
     gs = fig.add_gridspec(ceil(len(indices)/n_cols), n_cols)
     axs = gs.subplots()
 
