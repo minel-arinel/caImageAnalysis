@@ -7,6 +7,7 @@ import os
 import pandas as pd
 import random
 import scipy.cluster.hierarchy as sch
+from scipy.cluster.vq import kmeans2
 from scipy.signal import find_peaks
 from scipy.stats import sem, gaussian_kde
 
@@ -158,6 +159,75 @@ def normalize_dff(fish):
     return fish.temporal_df
 
 
+def kmeans_clustering(data, k):
+    '''Takes in an array of neural responses and performs k-means clustering on them'''
+    # K-means relies on random number generation, we can fix the seed to have same result each time 
+    centroid, labels = kmeans2(data, k, seed=1111111, minit='points')
+
+    kmeans_clusters = dict()
+
+    for i, cl in enumerate(labels):
+        if cl+1 not in kmeans_clusters.keys():
+            kmeans_clusters[cl+1] = list()
+
+        kmeans_clusters[cl+1].append(data[i])
+
+    return kmeans_clusters, centroid
+
+
+def hierarchical_clustering(data, max_inter_cluster_dist, save_path=str()):
+    '''Takes in an array of neural responses and performs hierarchical clustering on them'''
+    # Hierarchical clustering of temporal responses
+    d = sch.distance.pdist(data)
+    Z = sch.linkage(d, method='ward')
+
+    # Flat clustering of the dendrogram
+    T = sch.fcluster(Z, max_inter_cluster_dist, criterion='distance', depth=3)
+    print(f'Number of clusters: {T.max()}')
+
+    sort_inds = np.argsort(T)  # indices for ordering components by cluster number
+
+    fig = plt.figure(figsize=(25, 10))
+    dn = sch.dendrogram(Z)
+    plt.hlines(max_inter_cluster_dist, 0, len(d), color='r')
+    plt.title(f'Clustering: max_inter_cluster_dist={max_inter_cluster_dist}')
+    plt.grid(visible=False)
+    plt.show()
+
+    if len(save_path.name) != 0:
+       plt.savefig(save_path.joinpath(f"hierarchical_clustering_{max_inter_cluster_dist}.pdf"), transparent=True) 
+
+    # Create a clusters dictionary to store all temporal responses per cluster
+    clusters = dict()
+    for i, cluster in enumerate(T[sort_inds]):
+        if cluster in clusters:
+            clusters[cluster].append(data[sort_inds][i])
+        else:
+            clusters[cluster] = [data[sort_inds][i]]
+
+    return clusters, T
+
+
+def sort_by_peak(data, window=10):
+    '''Sorts an array by the peak values using a sum of sliding window'''
+    sorted_data = sorted(data, key=lambda arr: np.argmax(np.convolve(arr, np.ones(window), 'valid')))
+
+    return sorted_data
+
+
+def sort_clusters_by_peak(clusters):
+    '''Sorts a dictionary of clustered traces by the peak values using a sum of sliding window'''
+    peak_clusters = dict()
+
+    for cl in clusters:
+        sorted_ts = sort_by_peak(clusters[cl])
+        inds = list()
+        for t in clusters[cl]:
+            i = np.argmax(t)
+            inds.append(i)
+        peak_clusters[cl] = np.median(inds)
+
+
 def cluster_temporal(fish, max_inter_cluster_dist, sort=True, savefig=False):
     '''
     Clusters temporal responses using hierarchical and flat clustering
@@ -174,7 +244,7 @@ def cluster_temporal(fish, max_inter_cluster_dist, sort=True, savefig=False):
     print(f'Number of clusters: {T.max()}')
 
     sort_inds = np.argsort(T)  # indices for ordering components by cluster number
-        
+
     # Create a clusters dictionary to store all temporal responses per cluster
     clusters = dict()
     for i, cluster in enumerate(T[sort_inds]):
@@ -221,7 +291,7 @@ def cluster_temporal(fish, max_inter_cluster_dist, sort=True, savefig=False):
 
     if savefig:
         plt.savefig(fish.exp_path.joinpath(f"hierarchical_clustering_{max_inter_cluster_dist}.pdf"), transparent=True)
-    
+
     if sort:  
         # Sorted cluster keys      
         sorted_keys = sorted(clusters, key=lambda k: len(clusters[k]), reverse=True)  
@@ -245,7 +315,23 @@ def cluster_temporal(fish, max_inter_cluster_dist, sort=True, savefig=False):
     return fish.clusters
 
 
-def plot_temporal(fish, plane, indices=None, heatmap=False, key=None):
+def plot_heatmap(data, fps=1.3039181000348583, pulses=[391, 547, 704, 860, 1017]):
+    '''Plots temporal components'''
+    # Just simple heatmaps
+    fig = plt.figure(figsize=(20, 10))
+    plt.imshow(data, cmap='plasma', interpolation='nearest', aspect='auto')
+    
+    ticks = np.arange(0, 16*60*fps, 60*fps)
+    plt.xticks(ticks=ticks, labels=np.round(ticks/fps).astype(int))
+    
+    for pulse in pulses:
+        plt.vlines(pulse, -0.5, len(data)-0.5, color='w', lw=3)
+    
+    plt.xlabel('Time (s)')
+    plt.grid(visible=False)
+
+
+def plot_temporal_plane(fish, plane, indices=None, heatmap=False, key=None):
     '''Plots individual temporal components of a plane'''
     row = fish.temporal_df[fish.temporal_df.plane == plane].iloc[0]
 
@@ -274,17 +360,8 @@ def plot_temporal(fish, plane, indices=None, heatmap=False, key=None):
         plt.show()
 
     else:
-        fig = plt.figure(figsize=(20, 20))
-        plt.imshow(temporal, cmap='plasma', interpolation='nearest')
-        
-        ticks = np.arange(0, 16*60*fish.fps, 60*fish.fps)
-        plt.xticks(ticks=ticks, labels=np.round(ticks/fish.fps).astype(int))
-        
-        for pulse in fish.get_pulse_frames():
-            plt.vlines(pulse/fish.fps, 0, len(temporal)-1, color='r')
-        
+        plot_heatmap(temporal, fps=fish.fps, pulses=fish.get_pulse_frames())
         plt.title(f'Plane {plane}: Temporal heatmap')
-        plt.xlabel('Time (s)')
         plt.show()
 
 
@@ -409,17 +486,17 @@ def plot_spatial_overlayed(fish, img, clusters=None, vmin=0, vmax=360, savefig=F
             for j, com in enumerate(coms):
                 try:
                     if j == 0:  # add a label for the first component of each cluster
-                        plt.scatter(com[0]*2, com[1]*2, s=150, color=colors[i], label=cluster)
+                        plt.scatter(com[0]*(1024 / img.shape[1]), com[1]*(1024 / img.shape[0]), s=150, color=colors[i], label=cluster)
                     else:
-                        plt.scatter(com[0]*2, com[1]*2, s=150, color=colors[i])
+                        plt.scatter(com[0]*(1024 / img.shape[1]), com[1]*(1024 / img.shape[0]), s=150, color=colors[i])
                 
                 except IndexError:  # if we run out of colors
                     colors += colors
 
                     if j == 0:  # add a label for the first component of each cluster
-                        plt.scatter(com[0]*2, com[1]*2, s=150, color=colors[i], label=cluster)
+                        plt.scatter(com[0]*(1024 / img.shape[1]), com[1]*(1024 / img.shape[0]), s=150, color=colors[i], label=cluster)
                     else:
-                        plt.scatter(com[0]*2, com[1]*2, s=150, color=colors[i])
+                        plt.scatter(com[0]*(1024 / img.shape[1]), com[1]*(1024 / img.shape[0]), s=150, color=colors[i])
 
     plt.legend()
             
@@ -456,13 +533,13 @@ def plot_spatial_individual(fish, img, clusters=None, vmin=0, vmax=360, distribu
         
         for com in coms:
             try:
-                axes[img_row, int(i % n_cols)].scatter(com[0]*2, com[1]*2, s=50, color=colors[i])
+                axes[img_row, int(i % n_cols)].scatter(com[0]*(1024 / img.shape[1]), com[1]*(1024 / img.shape[0]), s=50, color=colors[i])
             except IndexError:  # if we run out of colors
                 colors += colors
-                axes[img_row, int(i % n_cols)].scatter(com[0]*2, com[1]*2, s=50, color=colors[i])
+                axes[img_row, int(i % n_cols)].scatter(com[0]*(1024 / img.shape[1]), com[1]*(1024 / img.shape[0]), s=50, color=colors[i])
             
-            xcoords.append(com[0]*2)
-            ycoords.append(com[1]*2)
+            xcoords.append(com[0]*(1024 / img.shape[1]))
+            ycoords.append(com[1]*(1024 / img.shape[0]))
         
         if distribution:
             divider = make_axes_locatable(axes[img_row, int(i % n_cols)])
@@ -495,10 +572,12 @@ def plot_spatial_individual(fish, img, clusters=None, vmin=0, vmax=360, distribu
         plt.savefig(fish.exp_path.joinpath("clusters_spatial_individual.pdf"), transparent=True)
 
 
-def find_stimulus_responsive(fish, pre_frame_num=4, post_frame_num=13, key=None):
+def find_stimulus_responsive(fish, pre_frame_num=4, post_frame_num=13, peak_threshold=0.1, baseline_threshold=0.5, key=None):
     '''Identifies stimulus responsive neurons
     pre_frame_num: number of frames before the pulse. 4 frames is ~3 seconds
     post_frame_num: number of frames after the pulse. 13 frames is ~10 seconds
+    peak_threshold: minimum normalized fluorescence intensity for an excitatory neuron
+    baseline_threshold: maximum average baseline value for activated neurons 
     '''
     if key is None:
         key = 'norm_dff'
@@ -513,6 +592,10 @@ def find_stimulus_responsive(fish, pre_frame_num=4, post_frame_num=13, key=None)
             pulse_frames.append(row['pulse_frames'])
 
     stim_responsive_neurons = list()  # list of neuron indices that are selected to be stimulus responsive
+    activated_neurons = list()  # list of neuron indices that are activated to the injection on average
+    inhibited_neurons = list()  # list of neuron indices that are inhibited by the injection on average
+    pulse_responses = list()
+
     for i, neuron in enumerate(neurons):
         pulses = pulse_frames[i]
         traces = list()
@@ -530,33 +613,98 @@ def find_stimulus_responsive(fish, pre_frame_num=4, post_frame_num=13, key=None)
         # the standard deviation of "pre".
         pre_stdev = np.array(traces)[:, :pre_frame_num].std()
 
-        # Excitatory neurons: If the peak response in "post" is bigger
-        # than 1.8 times the "pre" standard deviation, the neuron is stimulus 
-        # responsive
-        peak_response = avg_trace[pre_frame_num:].max()
-        if peak_response >= np.array(traces)[:, :pre_frame_num].mean() + 1.8 * pre_stdev and peak_response > 0.1:
-            stim_responsive_neurons.append(i)
-            print(f'neuron {i} is excitatory stimulus responsive')
+        response_count = 0  # to calculate how many injections the neuron responds to
+        responsive = False
 
-        # Inhibitory neurons: If the minimum response in "post" is smaller
+        # if the neuron responds to specific pulses, store which pulses those are in a list
+        # each item is a tuple, in the format (pulse number, 0 or 1)
+        # 0 means it's inhibited by the pulse, 1 means it's activated by the pulse
+        neuron_pulse_response = list()  
+
+        # Activated neurons: If the peak response in "post" is bigger
         # than 1.8 times the "pre" standard deviation, the neuron is stimulus 
         # responsive
-        min_response = avg_trace[pre_frame_num:].min()
-        if min_response <= np.array(traces)[:, :pre_frame_num].mean() - 1.8 * pre_stdev:
+        activated_thresh = np.array(traces)[:, :pre_frame_num].mean() + 1.8 * pre_stdev
+
+        # Inhibited neurons: If the minimum response in "post" is smaller
+        # than 1.8 times the "pre" standard deviation, the neuron is stimulus 
+        # responsive
+        inhibited_thresh = np.array(traces)[:, :pre_frame_num].mean() - 1.8 * pre_stdev
+
+        if check_if_activated(avg_trace, activated_thresh, pre_frame_num=pre_frame_num, peak_threshold=peak_threshold):
+            responsive = True
             stim_responsive_neurons.append(i)
-            print(f'neuron {i} is inhibitory stimulus responsive')
+            activated_neurons.append(i)
+            print(f'neuron {i} is activated')
+
+            for t, trace in enumerate(traces):
+                # now let's determine how many of the stimuli individual neurons are responding to
+                if check_if_activated(trace, activated_thresh, pre_frame_num=pre_frame_num, peak_threshold=peak_threshold, baseline_threshold=baseline_threshold):
+                    response_count += 1
+                    neuron_pulse_response.append((t+1, 1))
+                    print(f'neuron {i} responds to stimulus {t+1} (activated)')
+
+        elif check_if_inhibited(avg_trace, inhibited_thresh, pre_frame_num=pre_frame_num):
+            responsive = True
+            stim_responsive_neurons.append(i)
+            inhibited_neurons.append(i)
+            print(f'neuron {i} is inhibited')
+
+            for t, trace in enumerate(traces):
+                # now let's determine how many of the stimuli individual neurons are responding to
+                if check_if_inhibited(trace, inhibited_thresh, pre_frame_num=pre_frame_num):
+                    response_count += 1
+                    neuron_pulse_response.append((t+1, 0))
+                    print(f'neuron {i} responds to stimulus {t+1} (inhibited)')
+
+        if responsive:
+            print(f'neuron {i} responds to {(response_count/len(traces))*100}% of injections\n')
+            pulse_responses.append(neuron_pulse_response)
 
     print(f'{len(stim_responsive_neurons)} out of {len(neurons)} neurons is stimulus responsive: {len(stim_responsive_neurons)/len(neurons)*100}%')
 
-    return stim_responsive_neurons
+    return stim_responsive_neurons, activated_neurons, inhibited_neurons, pulse_responses
 
 
-def plot_neuron_pulse_average(fish, pre_frame_num=4, post_frame_num=13, key=None, savefig=False):
+def check_if_activated(trace, threshold, pre_frame_num=4, peak_threshold=0.1, baseline_threshold=0.5):
+    '''Checks if a neural trace is activated
+    pre_frame_num: number of frames before the pulse. 4 frames is ~3 seconds'''
+    peak_response = trace[pre_frame_num:].max()
+    avg_baseline = trace[:pre_frame_num].mean()
+
+    # Activated neurons: If the peak response in "post" is bigger
+    # than the threshold, the neuron is stimulus responsive
+    if peak_response > threshold and peak_response > peak_threshold and avg_baseline <= baseline_threshold:
+        return True
+    else:
+        False
+
+
+def check_if_inhibited(trace, threshold, pre_frame_num=4):
+    '''Checks if a neural trace is inhibited
+    pre_frame_num: number of frames before the pulse. 4 frames is ~3 seconds'''
+    min_response = trace[pre_frame_num:].min()
+
+    # Inhibited neurons: If the minimum response in "post" is smaller
+    # than the threshold, the neuron is stimulus responsive
+    if min_response < threshold:
+        return True
+    else:
+        False
+
+
+def plot_stim_responsive_neuron_average():
+    '''TODO: Plots the average of stimulus responsive neurons'''
+    pass
+
+
+def plot_neuron_pulse_average(fish, pre_frame_num=4, post_frame_num=13, peak_threshold=0.1, key=None, savefig=False, n_cols=3, baseline_threshold=0.5):
     '''Plots the average response of each neuron to the pulses'''
-    stim_responsive_neurons = find_stimulus_responsive(fish, pre_frame_num=pre_frame_num, post_frame_num=post_frame_num, key=key)
-    
     if key is None:
-        key = 'norm_dff'
+        key = 'raw_norm_dff'
+    
+    stim_responsive_neurons, _, _, _ = find_stimulus_responsive(fish, pre_frame_num=pre_frame_num, post_frame_num=post_frame_num, 
+                                                                peak_threshold=peak_threshold, key=key, baseline_threshold=baseline_threshold)
 
     neurons = list()
     pulse_frames=list()
@@ -567,9 +715,8 @@ def plot_neuron_pulse_average(fish, pre_frame_num=4, post_frame_num=13, key=None
         for j in range(len(row[key])):  # add pulse frames for each neuron in each plane
             pulse_frames.append(row['pulse_frames'])
 
-    n_cols = 3
     n_rows = np.ceil(len(neurons) / n_cols)
-    fig, axes = plt.subplots(int(n_rows), n_cols, sharex=True, sharey=True, figsize=(15, np.ceil(len(neurons) / n_cols) * 5), layout='constrained')
+    fig, axes = plt.subplots(int(n_rows), n_cols, sharex=True, sharey=True, figsize=(5*n_cols, np.ceil(len(neurons) / n_cols) * 5), layout='constrained')
 
     for i, neuron in enumerate(neurons):
         img_row = int(i / n_cols)
@@ -592,13 +739,14 @@ def plot_neuron_pulse_average(fish, pre_frame_num=4, post_frame_num=13, key=None
 
         axes[img_row, int(i % n_cols)].plot(x, avg_trace)
         axes[img_row, int(i % n_cols)].fill_between(x, avg_trace-sems, avg_trace+sems, alpha=0.2)
-        axes[img_row, int(i % n_cols)].axvline(pre_frame_num, color='red', lw=2)
+        axes[img_row, int(i % n_cols)].axvspan(pre_frame_num-1, pre_frame_num, color='red', lw=2, alpha=0.2)
         axes[img_row, int(i % n_cols)].set_title(str(i))
 
         if i in stim_responsive_neurons:
-            axes[img_row, int(i % n_cols)].tick_params(color='red', labelcolor='red')
+            axes[img_row, int(i % n_cols)].tick_params(color='red', labelcolor='red', width=5)
             for spine in axes[img_row, int(i % n_cols)].spines.values():
                 spine.set_edgecolor('red')
+                spine.set_linewidth(5)
 
     fig.supxlabel('Frame')
     plt.figtext(0.02, 1, f'{len(stim_responsive_neurons)} out of {len(neurons)} neurons is stimulus responsive: {len(stim_responsive_neurons)/len(neurons)*100}%', fontsize=14)    
@@ -639,3 +787,57 @@ def find_twitches(fish, plot=False, **kwargs):
                 plt.legend()
 
     return all_peaks
+
+
+def unroll_temporal_df(fish, **kwargs):
+    '''Expands the temporal_df so that each row is a single neuron rather than a single plane'''
+    unrolled_df = pd.DataFrame(columns=['fish_id', 'plane', 'neuron', 'raw_temporal', 'temporal', 
+                                        'raw_dff', 'dff', 'raw_norm_dff', 'norm_dff', 
+                                        'roi_index', 'pulse_frames'])
+    
+    neuron_count = -1
+    for i, row in fish.temporal_df.iterrows():
+        for j in range(len(row['roi_indices'])):
+            unrolled_row = dict()
+
+            neuron_count += 1
+
+            unrolled_row['fish_id'] = int(fish.fish_id)
+            unrolled_row['plane'] = row['plane']
+            unrolled_row['neuron'] = neuron_count
+            unrolled_row['raw_temporal'] = row['raw_temporal'][j]
+            unrolled_row['temporal'] = row['temporal'][j]
+            unrolled_row['raw_dff'] = row['raw_dff'][j]
+            unrolled_row['dff'] = row['dff'][j]
+            unrolled_row['raw_norm_dff'] = row['raw_norm_dff'][j]
+            unrolled_row['norm_dff'] = row['norm_dff'][j]
+            unrolled_row['roi_index'] = row['roi_indices'][j]
+            unrolled_row['pulse_frames'] = row['pulse_frames']
+
+            unrolled_df = pd.concat([unrolled_df, pd.DataFrame([unrolled_row])], ignore_index=True)
+
+    stim_responsive, activated, inhibited, pulse_responses = find_stimulus_responsive(fish, **kwargs)
+    
+    unrolled_df['responsive'] = False
+    unrolled_df['activated'] = None
+    unrolled_df['inhibited'] = None
+    unrolled_df['pulse_response'] = None
+
+    for i, neuron in enumerate(stim_responsive):
+        unrolled_df.loc[neuron, 'responsive'] = True
+
+        if neuron in activated:
+            unrolled_df.loc[neuron, 'activated'] = True
+            unrolled_df.loc[neuron, 'inhibited'] = False
+        
+        elif neuron in inhibited:
+            unrolled_df.loc[neuron, 'inhibited'] = True
+            unrolled_df.loc[neuron, 'activated'] = False
+
+        unrolled_df.at[neuron, 'pulse_response'] = pulse_responses[i]
+
+    unrolled_df.to_hdf(fish.exp_path.joinpath('unrolled_temporal.h5'), key='unrolled_temporal')
+
+    fish.process_bruker_filestructure()
+
+    return unrolled_df
