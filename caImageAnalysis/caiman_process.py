@@ -2,8 +2,10 @@ import caiman as cm
 from caiman.source_extraction.cnmf import params as params
 from caiman.source_extraction.cnmf import cnmf as cnmf
 from caiman.motion_correction import MotionCorrect
+import glob
 import logging
 import numpy as np
+import os
 import pandas as pd
 import pickle
 
@@ -161,12 +163,29 @@ def caiman_cnmf(fish, plane=None, **opts_dict):
     cnm = cnm.fit(images)
     cnm = cnm.refit(images, dview=dview)
 
+    # COMPONENT EVALUATION
+    # the components are evaluated in three ways:
+    #   a) the shape of each component must be correlated with the data
+    #   b) a minimum peak SNR is required over the length of a transient
+    #   c) each shape passes a CNN based classifier
     cnm.estimates.evaluate_components(images, cnm.params, dview=dview)
+
+    # Extract DF/F values
+    cnm.estimates.detrend_df_f(quantileMin=8, frames_window=250)
+
+    # Select only high quality components
+    cnm.estimates.select_components(use_object=True)
+
+    results_path = str(fish.exp_path.joinpath('analysis_results.hdf5'))
+    cnm.save(results_path)
 
     with open(fish.exp_path.joinpath('opts.pkl'), 'wb') as fp:
         pickle.dump(_opts, fp)
 
     cm.stop_server(dview=dview)
+    log_files = glob.glob('*_LOG_*')
+    for log_file in log_files:
+        os.remove(log_file)
 
     return cnm, images
 
