@@ -31,7 +31,10 @@ class BrukerFish(Fish):
             except KeyError:
                 pass
         else:
-            self.fps = calculate_fps(self.data_paths['frametimes'])
+            try:
+                self.fps = calculate_fps(self.data_paths['frametimes'])
+            except:
+                pass
 
         # TODO: self.zoom = self.get_zoom()
 
@@ -68,6 +71,9 @@ class BrukerFish(Fish):
                 elif entry.name == 'temporal.h5':
                     self.data_paths['temporal'] = Path(entry.path)
                     self.temporal_df = pd.read_hdf(self.data_paths['temporal'])
+                elif entry.name == 'unrolled_temporal.h5':
+                    self.data_paths['unrolled_temporal'] = Path(entry.path)
+                    self.unrolled_temporal_df = pd.read_hdf(self.data_paths['unrolled_temporal'])
                 elif entry.name == 'vol_temporal.pkl':
                     self.data_paths['vol_temporal'] = Path(entry.path)
                     self.vol_temporal = load_pickle(self.data_paths['vol_temporal'])
@@ -75,6 +81,8 @@ class BrukerFish(Fish):
                     self.data_paths['anatomy'] = Path(entry.path)
                 elif 'C_frames' in entry.name and not entry.name.startswith('.'):
                     self.data_paths['C_frames'] = Path(entry.path)
+                elif entry.name == 'analysis_results.hdf5':
+                    self.data_paths['analysis_results'] = Path(entry.path)
                     
         if 'raw' in self.data_paths.keys():
             if 'anatomy' not in self.data_paths.keys():
