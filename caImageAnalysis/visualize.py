@@ -160,13 +160,16 @@ def visualize_temporal(fish, row):
         plane = name[name.rfind('_')+1:]
         fts = pd.read_hdf(fish.data_paths['volumes'][plane]['frametimes'])
         
-        for pulse in fts.pulse.unique():
-            if pulse != 0:
-                pulse_frame = fts[fts.pulse == pulse].index.values[0]
+        try:
+            for pulse in fts.pulse.unique():
+                if pulse != 0:
+                    pulse_frame = fts[fts.pulse == pulse].index.values[0]
 
-                xs = [pulse_frame] * 2
-                line = np.dstack([xs, [temporal.min(), temporal.max()]])[0]
-                plot_temporal.add_line(data=line, thickness=3, colors='red', name=f'pulse_{pulse}')
+                    xs = [pulse_frame] * 2
+                    line = np.dstack([xs, [temporal.min(), temporal.max()]])[0]
+                    plot_temporal.add_line(data=line, thickness=3, colors='red', name=f'pulse_{pulse}')
+        except:
+            pass
 
         # a vertical line that is synchronized to the image widget "t" (timepoint) slider
         _ls = LineSlider(x_pos=0, bounds=(temporal.min(), temporal.max()), slider=iw_cnmf.sliders["t"])
@@ -361,3 +364,26 @@ def visualize_around_frame_multiple(fish, frames, **kwargs):
 
     iw = visualize_images(imgs=imgs, names=names)
     return iw
+
+
+def visualize_plane_over_time_mpl(fish, plane, n_planes, frame_range=list(), img_row=-1, n_cols=3, vmin=0, vmax=360):
+    '''Visualize a plane over time within a given range of frames. Plots each time frame as a separate plot'''
+    img = memmap(fish.data_paths['raw_image'])
+
+    if len(frame_range) != 0:
+        plane_indices = np.arange(frame_range[0]+plane, frame_range[1]+1, n_planes)
+    else:
+        plane_indices = np.arange(plane, img.shape[0]+1, n_planes)
+
+    fig, ax = plt.subplots(int(len(plane_indices) / n_cols)+1, n_cols, figsize=(5*n_cols, np.ceil(len(plane_indices) / n_cols) * 5))
+
+    for i in range(len(plane_indices)):
+        row = int(i / n_cols)
+        col = i % n_cols
+
+        ax[row, col].imshow(img[plane_indices[i]], vmin=vmin, vmax=vmax)
+
+        if img_row != -1:
+            ax[row, col].axhline(y=img_row, color='r')
+
+    return plane_indices
