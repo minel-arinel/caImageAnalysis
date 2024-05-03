@@ -16,8 +16,10 @@ from caImageAnalysis.utils import calculate_fps, load_pickle
 
 
 class BrukerFish(Fish):
-    def __init__(self, folder_path, region=''):
+    def __init__(self, folder_path, region='', remove_pulses=None, gavage=False):
         self.region = region
+        self.remove_pulses = remove_pulses
+        self.gavage = gavage
         super().__init__(folder_path)
         
         self.bruker = True
@@ -102,29 +104,6 @@ class BrukerFish(Fish):
                                 self.data_paths['markpoints'] = [Path(entry.path)]
                         elif 'VoltageOutput' in entry.name:
                             self.data_paths['voltage_output'] = Path(entry.path)
-                        
-        if 'voltage_output' in self.data_paths.keys():
-            self.voltage_output = VoltageOutput(self.data_paths['voltage_output'], self.data_paths['log'])
-            try:
-                self.frametimes_df = self.voltage_output.align_pulses_to_frametimes(self.frametimes_df)
-            except AttributeError:
-                # if this is the first time initializing, frametimes.txt might not have been created yet
-                pass
-
-        if 'markpoints' in self.data_paths.keys():
-            self.markpoints = dict()
-            self.data_paths['markpoints'].sort()
-
-            for mp_path in self.data_paths['markpoints']:
-                mp_path = str(mp_path)
-                cycle = int(mp_path[mp_path.find('Cycle')+5:mp_path.rfind('_')])
-                mp = MarkPoints(mp_path, self.data_paths['log'], cycle=cycle)
-                self.markpoints[cycle] = mp
-                try:
-                    self.frametimes_df = self.markpoints[cycle].align_pulses_to_frametimes(self.frametimes_df)
-                except AttributeError:
-                    # if this is the first time initializing, frametimes.txt might not have been created yet
-                    pass
 
         if self.volumetric:
             self.data_paths['volumes'] = dict()
@@ -143,6 +122,39 @@ class BrukerFish(Fish):
 
         if 'mesmerize' in self.data_paths.keys():
             self.process_mesmerize_filestructure()
+
+        
+        try:
+            if self.gavage:
+                if self.volumetric:
+                    self.align_pulses_to_frametimes_from_volume()
+                else:
+                    # Typical pulse range to compare
+                    pulses = [1956, 2739, 3521, 4304, 5086]
+                    if self.remove_pulses is not None:
+                        vals = [pulses[rp-1] for rp in self.remove_pulses]
+                        for val in vals:
+                            pulses.remove(val)
+                    self.align_pulses_to_frametimes(pulses)
+
+            elif 'voltage_output' in self.data_paths.keys():
+                self.voltage_output = VoltageOutput(self.data_paths['voltage_output'], self.data_paths['log'])
+                self.frametimes_df = self.voltage_output.align_pulses_to_frametimes(self.frametimes_df)
+
+            elif 'markpoints' in self.data_paths.keys():
+                self.markpoints = dict()
+                self.data_paths['markpoints'].sort()
+
+                for mp_path in self.data_paths['markpoints']:
+                    mp_path = str(mp_path)
+                    cycle = int(mp_path[mp_path.find('Cycle')+5:mp_path.rfind('_')])
+                    mp = MarkPoints(mp_path, self.data_paths['log'], cycle=cycle)
+                    self.markpoints[cycle] = mp
+                    self.frametimes_df = self.markpoints[cycle].align_pulses_to_frametimes(self.frametimes_df)
+
+        except AttributeError:
+            # if this is the first time initializing, frametimes.txt might not have been created yet
+            pass
 
     def get_anatomy(self):
         '''Finds the anatomy stack in the raw data folder'''
@@ -224,13 +236,19 @@ class BrukerFish(Fish):
 
         self.raw_text_frametimes_to_df()
 
-        if 'voltage_output' in self.data_paths.keys():
+        if self.gavage:
+            # Typical pulse range to compare
+            pulses = [1956, 2739, 3521, 4304, 5086]
+            if self.remove_pulses is not None:
+                vals = [pulses[rp-1] for rp in self.remove_pulses]
+                for val in vals:
+                    pulses.remove(val)
+            self.align_pulses_to_frametimes(pulses)
+        elif 'voltage_output' in self.data_paths.keys():
             self.frametimes_df = self.voltage_output.align_pulses_to_frametimes(self.frametimes_df)
-        
         elif 'markpoints' in self.data_paths.keys():
             for cycle in self.markpoints:
                 self.frametimes_df = self.markpoints[cycle].align_pulses_to_frametimes(self.frametimes_df)
-        
         else:
             print('no voltage output or markpoints detected')
     
@@ -318,7 +336,8 @@ class BrukerFish(Fish):
         
         if hasattr(self, 'voltage_output'):
             for i in range(self.voltage_output.n_pulses):
-                min_pulse_frames.append(np.min([pulses[i] for pulses in self.temporal_df.pulse_frames]))
+                # min_pulse_frames.append(np.min([pulses[i] for pulses in self.temporal_df.pulse_frames]))
+                min_pulse_frames.append(np.argmax(np.bincount([pulses[i] for pulses in self.temporal_df.pulse_frames])))
         
         # elif hasattr(self, 'markpoints'):
         #     pass
@@ -343,3 +362,44 @@ class BrukerFish(Fish):
             if val['key'] == 'opticalZoom':
                 print(val['value'])
         return
+    
+    def align_pulses_to_frametimes(self, pulses):
+        '''Aligns manual entry of pulse frames to the frametimes dataframe'''
+        self.frametimes_df['pulse'] = 0
+        curr_pulse = 0
+        
+        for i, _ in self.frametimes_df.iterrows():
+            try:
+                if i >= pulses[curr_pulse]:
+                    curr_pulse += 1
+                    self.frametimes_df.loc[i, 'pulse'] = curr_pulse
+                else:
+                    self.frametimes_df.loc[i, 'pulse'] = curr_pulse
+            except IndexError:
+                # exception for the last pulse
+                self.frametimes_df.loc[i, 'pulse'] = curr_pulse
+
+    def align_pulses_to_frametimes_from_volume(self):
+        '''Aligns frametimes_df from the split frametimes h5 files'''
+        pulses = dict()
+        n_planes = len(self.data_paths['volumes'])
+
+        for plane in self.data_paths['volumes']:
+            df = pd.read_hdf(self.data_paths['volumes'][plane]['frametimes'])
+
+            for pulse in df.pulse.unique():
+                if pulse not in pulses:
+                    pulses[pulse] = list()
+
+                pulses[pulse].append(df[df.pulse == pulse].index[0])
+
+        # find the first plane that comes immediately after the pulses
+        first_pulse_planes = [np.where(frames == np.min(frames))[0][0] for frames in pulses.values()]
+
+        # calculate where the first pulse frame would be in the combined frametimes
+        start_frames = [n_planes * np.min(pulses[i]) + plane for i, plane in enumerate(first_pulse_planes)]
+
+        if start_frames[0] == 0:
+            start_frames.remove(0)
+
+        self.align_pulses_to_frametimes(start_frames)
