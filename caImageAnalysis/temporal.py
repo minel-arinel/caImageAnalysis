@@ -9,7 +9,7 @@ import random
 import scipy.cluster.hierarchy as sch
 from scipy.cluster.vq import kmeans2
 from scipy.signal import find_peaks
-from scipy.stats import sem, gaussian_kde
+from scipy.stats import sem, gaussian_kde, zscore
 
 from .mesm import get_plane_number, load_mesmerize, load_rois, uuid_to_plane
 from .utils import save_pickle
@@ -31,31 +31,41 @@ def save_temporal(fish):
     for i, row in mes_df.iterrows():
         if row.algo == 'cnmf':
 
-            name = row['item_name']
-            if name not in final_rois.keys():
-                continue
+            try:
+                plane = get_plane_number(row)
 
-            plane = get_plane_number(row)
-            planes.append(int(plane))
+                name = row['item_name']
+                if name not in final_rois.keys():
+                    continue
 
-            indices = final_rois[name]
-            roi_indices.append(indices)
+                indices = final_rois[name]
 
-            raw_temp = row.cnmf.get_temporal("good", add_residuals=True)  # raw temporal responses: C+YrA
-            raw_temporal.append(raw_temp[indices])
+                raw_temp = row.cnmf.get_temporal("good", add_residuals=True)  # raw temporal responses: C+YrA
+                raw_temporal.append(raw_temp[indices])
+
+                planes.append(int(plane))
+                roi_indices.append(indices)
+
+                temp = row.cnmf.get_temporal('good')  # denoised temporal responses: C
+                temporal.append(temp[indices])
+
+                row.cnmf.run_detrend_dfof()  # uses caiman's detrend_df_f function
+                F_dff = row.cnmf.get_detrend_dfof("good")  # detrended dF/F0 curves
+                raw_dff.append(F_dff[indices])
+
+                fts = pd.read_hdf(fish.data_paths['volumes'][plane]['frametimes'])
+                try:
+                    pulses = [fts[fts.pulse == pulse].index.values[0] for pulse in fts.pulse.unique() if pulse != fts.loc[0, 'pulse']]
+                except:
+                    pulses = [0]
+                
+                pulse_frames.append(pulses)
+
+                print(f'finished plane {plane}')
             
-            temp = row.cnmf.get_temporal('good')  # denoised temporal responses: C
-            temporal.append(temp[indices])
-
-            row.cnmf.run_detrend_dfof()  # uses caiman's detrend_df_f function
-            F_dff = row.cnmf.get_detrend_dfof("good")  # detrended dF/F0 curves
-            raw_dff.append(F_dff[indices])
-
-            fts = pd.read_hdf(fish.data_paths['volumes'][plane]['frametimes'])
-            pulses = [fts[fts.pulse == pulse].index.values[0] for pulse in fts.pulse.unique() if pulse != fts.loc[0, 'pulse']]
-            pulse_frames.append(pulses)
-
-            print(f'finished plane {plane}')
+            except ValueError:
+                # if none of the cells made it
+                pass
 
     temporal_df = pd.DataFrame({'plane': planes,
                                 'raw_temporal': raw_temporal,
@@ -159,6 +169,81 @@ def normalize_dff(fish):
     return fish.temporal_df
 
 
+def normalize_temporaldf(fish):
+    '''Normalizes both the raw and denoised traces between 0 and 1'''
+    fish.temporal_df['norm_temporal'] = None
+    fish.temporal_df['raw_norm_temporal'] = None
+
+    for i, row in fish.temporal_df.iterrows():
+        norm_temporals = list()
+        raw_norm_temporals = list()
+
+        for comp in row.temporal:
+            norm_temporal = (comp - min(comp)) / (max(comp) - min(comp))
+            norm_temporals.append(norm_temporal)
+
+        for comp in row.raw_dff:
+            raw_norm_temporal = (comp - min(comp)) / (max(comp) - min(comp))
+            raw_norm_temporals.append(raw_norm_temporal)
+
+        fish.temporal_df['norm_temporal'][i] = norm_temporals
+        fish.temporal_df['raw_norm_temporal'][i] = raw_norm_temporals
+
+    fish.temporal_df.to_hdf(fish.exp_path.joinpath('temporal.h5'), key='temporal')
+
+    return fish.temporal_df
+
+
+def zscore_temporaldf(fish):
+    '''Z-scores both the raw and denoised signals'''
+    fish.temporal_df['zscore'] = None
+    fish.temporal_df['raw_zscore'] = None
+
+    for i, row in fish.temporal_df.iterrows():
+        zscores = list()
+        raw_zscores = list()
+
+        for comp in row.temporal:
+            zs = zscore(comp)
+            zscores.append(zs)
+
+        for comp in row.raw_temporal:
+            raw_zscore = zscore(comp)
+            raw_zscores.append(raw_zscore)
+
+        fish.temporal_df['zscore'][i] = zscores
+        fish.temporal_df['raw_zscore'][i] = raw_zscores
+
+    fish.temporal_df.to_hdf(fish.exp_path.joinpath('temporal.h5'), key='temporal')
+
+    return fish.temporal_df
+
+
+def percentile_norm_temporaldf(fish, percentile=75):
+    '''Normalizes both the raw and denoised signals based on their 75th percentile'''
+    fish.temporal_df['percentile'] = None
+    fish.temporal_df['raw_percentile'] = None
+
+    for i, row in fish.temporal_df.iterrows():
+        percentiles = list()
+        raw_percentiles = list()
+
+        for comp in row.temporal:
+            prc = comp/np.percentile(comp, percentile)
+            percentiles.append(prc)
+
+        for comp in row.raw_temporal:
+            raw_prc = comp/np.percentile(comp, percentile)
+            raw_percentiles.append(raw_prc)
+
+        fish.temporal_df['percentile'][i] = percentiles
+        fish.temporal_df['raw_percentile'][i] = raw_percentiles
+
+    fish.temporal_df.to_hdf(fish.exp_path.joinpath('temporal.h5'), key='temporal')
+
+    return fish.temporal_df
+
+
 def kmeans_clustering(data, k):
     '''Takes in an array of neural responses and performs k-means clustering on them'''
     # K-means relies on random number generation, we can fix the seed to have same result each time 
@@ -178,8 +263,8 @@ def kmeans_clustering(data, k):
 def hierarchical_clustering(data, max_inter_cluster_dist, save_path=str()):
     '''Takes in an array of neural responses and performs hierarchical clustering on them'''
     # Hierarchical clustering of temporal responses
-    d = sch.distance.pdist(data)
-    Z = sch.linkage(d, method='ward')
+    d = sch.distance.pdist(data, metric='cosine')  # pairwise distances between observations
+    Z = sch.linkage(d, method='complete')
 
     # Flat clustering of the dendrogram
     T = sch.fcluster(Z, max_inter_cluster_dist, criterion='distance', depth=3)
@@ -194,7 +279,7 @@ def hierarchical_clustering(data, max_inter_cluster_dist, save_path=str()):
     plt.grid(visible=False)
     plt.show()
 
-    if len(save_path.name) != 0:
+    if len(save_path) != 0:
        plt.savefig(save_path.joinpath(f"hierarchical_clustering_{max_inter_cluster_dist}.pdf"), transparent=True) 
 
     # Create a clusters dictionary to store all temporal responses per cluster
@@ -236,7 +321,7 @@ def cluster_temporal(fish, max_inter_cluster_dist, sort=True, savefig=False):
     sort: sorts the cluster keys in ascending order if True
     '''
     # Hierarchical clustering of temporal responses
-    d = sch.distance.pdist(fish.vol_temporal)
+    d = sch.distance.pdist(fish.vol_temporal, metric='cosine')  # pairwise distances between observations
     Z = sch.linkage(d, method='complete')
 
     # Flat clustering of the dendrogram
@@ -383,8 +468,11 @@ def plot_temporal_volume(fish, data=None, title=None, clusters=None, savefig=Fal
         ticks = np.arange(0, 16*60*fish.fps, 60*fish.fps)
         ax1.set_xticks(ticks=ticks, labels=np.round(ticks/fish.fps).astype(int))
         
-        for pulse in fish.get_pulse_frames():
-            ax1.vlines(pulse, -0.5, len(data)-0.5, color='r')
+        try:
+            for pulse in fish.get_pulse_frames():
+                ax1.vlines(pulse, -0.5, len(data)-0.5, color='r')
+        except:
+            pass
         
         ax1.title.set_text(title)
         ax1.set_xlabel('Time (s)')
@@ -414,8 +502,11 @@ def plot_temporal_volume(fish, data=None, title=None, clusters=None, savefig=Fal
         ticks = np.arange(0, 16*60*fish.fps, 60*fish.fps)
         plt.xticks(ticks=ticks, labels=np.round(ticks/fish.fps).astype(int))
         
-        for pulse in fish.get_pulse_frames():
-            plt.vlines(pulse, -0.5, len(data)-0.5, color='r')
+        try:
+            for pulse in fish.get_pulse_frames():
+                plt.vlines(pulse, -0.5, len(data)-0.5, color='r')
+        except:
+            pass
         
         plt.title(title)
         plt.xlabel('Time (s)')
@@ -434,8 +525,12 @@ def plot_representative_trace(fish, clusters, savefig=False):
         t = random.choice(temp)
         axes[i].plot(t)
         axes[i].title.set_text(cluster)
-        for pulse in fish.get_pulse_frames():
-            axes[i].vlines(pulse, 0, 1, color='r')
+
+        try:
+            for pulse in fish.get_pulse_frames():
+                axes[i].vlines(pulse, 0, 1, color='r')
+        except:
+            pass
 
     ticks = np.arange(0, 16*60*fish.fps, 60*fish.fps)
     plt.xticks(ticks=ticks, labels=np.round(ticks/fish.fps).astype(int))
@@ -445,9 +540,12 @@ def plot_representative_trace(fish, clusters, savefig=False):
         plt.savefig(fish.exp_path.joinpath("cluster_representative_traces.pdf"), transparent=True)
     
 
-def plot_average_traces(fish, clusters, savefig=False):
+def plot_average_traces(clusters, fish=None, pulses=list(), save_path=str(), savefig=False, fps=None):
     '''Given a clusters dictionary, plots the mean temporal trace per cluster'''
     fig, axes = plt.subplots(len(clusters), 1, sharex=True, sharey=True, figsize=(20, 20))
+
+    if fish is not None and len(pulses) == 0:
+        pulses = fish.get_pulse_frames()
 
     for i, (cluster, temp) in enumerate(clusters.items()):
         t = np.mean(temp, axis=0)
@@ -457,15 +555,33 @@ def plot_average_traces(fish, clusters, savefig=False):
         axes[i].plot(t)
         axes[i].fill_between(x, t-err, t+err, alpha=0.2)
         axes[i].title.set_text(cluster)
-        for pulse in fish.get_pulse_frames():
-            axes[i].vlines(pulse, 0, 1, color='r')
 
-    ticks = np.arange(0, 16*60*fish.fps, 60*fish.fps)
-    plt.xticks(ticks=ticks, labels=np.round(ticks/fish.fps).astype(int))
-    plt.xlabel('Time (s)')
+        try:
+            for pulse in pulses:
+                axes[i].vlines(pulse, 0, 1, color='r')
+        except:
+            pass
 
+    if fish is not None:
+        ticks = np.arange(0, 16*60*fish.fps, 60*fish.fps)
+        plt.xlabel('Time (s)')
+        plt.xticks(ticks=ticks, labels=np.round(ticks/fish.fps).astype(int))
+    elif fish is None and fps is not None:
+        ticks = np.arange(0, 16*60*fps, 60*fps)
+        plt.xlabel('Time (s)')
+        plt.xticks(ticks=ticks, labels=np.round(ticks/fps).astype(int))
+    elif fish is None and fps is None:
+        ticks = np.arange(0, 16*60, 60)
+        plt.xlabel('Frames')
+        plt.xticks(ticks=ticks, labels=ticks)
+    
     if savefig:
-        plt.savefig(fish.exp_path.joinpath("cluster_average_traces.pdf"), transparent=True)
+        if fish is not None and len(save_path) == 0:
+            plt.savefig(fish.exp_path.joinpath("cluster_average_traces.pdf"), transparent=True)
+        elif len(save_path) != 0:
+            plt.savefig(save_path.joinpath("cluster_average_traces.pdf"), transparent=True)
+        else:
+            print("No save_path provided. Cannot save figure.")
 
 
 def plot_spatial_overlayed(fish, img, clusters=None, vmin=0, vmax=360, savefig=False):
@@ -486,17 +602,17 @@ def plot_spatial_overlayed(fish, img, clusters=None, vmin=0, vmax=360, savefig=F
             for j, com in enumerate(coms):
                 try:
                     if j == 0:  # add a label for the first component of each cluster
-                        plt.scatter(com[0]*(1024 / img.shape[1]), com[1]*(1024 / img.shape[0]), s=150, color=colors[i], label=cluster)
+                        plt.scatter(com[0]*(1024 / img.shape[1]*2), com[1]*(1024 / img.shape[0]*2), s=150, color=colors[i], label=cluster)
                     else:
-                        plt.scatter(com[0]*(1024 / img.shape[1]), com[1]*(1024 / img.shape[0]), s=150, color=colors[i])
+                        plt.scatter(com[0]*(1024 / img.shape[1]*2), com[1]*(1024 / img.shape[0]*2), s=150, color=colors[i])
                 
                 except IndexError:  # if we run out of colors
                     colors += colors
 
                     if j == 0:  # add a label for the first component of each cluster
-                        plt.scatter(com[0]*(1024 / img.shape[1]), com[1]*(1024 / img.shape[0]), s=150, color=colors[i], label=cluster)
+                        plt.scatter(com[0]*(1024 / img.shape[1]*2), com[1]*(1024 / img.shape[0]*2), s=150, color=colors[i], label=cluster)
                     else:
-                        plt.scatter(com[0]*(1024 / img.shape[1]), com[1]*(1024 / img.shape[0]), s=150, color=colors[i])
+                        plt.scatter(com[0]*(1024 / img.shape[1]*2), com[1]*(1024 / img.shape[0]*2), s=150, color=colors[i])
 
     plt.legend()
             
@@ -533,10 +649,10 @@ def plot_spatial_individual(fish, img, clusters=None, vmin=0, vmax=360, distribu
         
         for com in coms:
             try:
-                axes[img_row, int(i % n_cols)].scatter(com[0]*(1024 / img.shape[1]), com[1]*(1024 / img.shape[0]), s=50, color=colors[i])
+                axes[img_row, int(i % n_cols)].scatter(com[0]*(1024 / img.shape[1]*2), com[1]*(1024 / img.shape[0]*2), s=50, color=colors[i])
             except IndexError:  # if we run out of colors
                 colors += colors
-                axes[img_row, int(i % n_cols)].scatter(com[0]*(1024 / img.shape[1]), com[1]*(1024 / img.shape[0]), s=50, color=colors[i])
+                axes[img_row, int(i % n_cols)].scatter(com[0]*(1024 / img.shape[1]*2), com[1]*(1024 / img.shape[0]*2), s=50, color=colors[i])
             
             xcoords.append(com[0]*(1024 / img.shape[1]))
             ycoords.append(com[1]*(1024 / img.shape[0]))
@@ -572,15 +688,22 @@ def plot_spatial_individual(fish, img, clusters=None, vmin=0, vmax=360, distribu
         plt.savefig(fish.exp_path.joinpath("clusters_spatial_individual.pdf"), transparent=True)
 
 
-def find_stimulus_responsive(fish, pre_frame_num=4, post_frame_num=13, peak_threshold=0.1, baseline_threshold=0.5, key=None):
+def find_stimulus_responsive(fish, pre_frame_num=15, post_frame_num=5, peak_threshold=None, min_threshold=None, key=None, normalize=False, 
+                             normalize_by_first=False):
     '''Identifies stimulus responsive neurons
     pre_frame_num: number of frames before the pulse. 4 frames is ~3 seconds
     post_frame_num: number of frames after the pulse. 13 frames is ~10 seconds
-    peak_threshold: minimum normalized fluorescence intensity for an excitatory neuron
-    baseline_threshold: maximum average baseline value for activated neurons 
+    peak_threshold: minimum normalized fluorescence intensity for an activated neuron
+    min_threshold: maximum normalized fluorescence intensity for an inhibited neuron
+    baseline_threshold: maximum average baseline value for activated neurons
+    normalize: if True, takes the pre-pulse period as baseline and calculates dF per pulse 
+    normalize_by_first: if True, takes the pre-pulse period of the FIRST pulse as baseline and calculates dF per pulse
     '''
     if key is None:
-        key = 'norm_dff'
+        key = 'raw_norm_temporal'
+
+    if normalize and normalize_by_first:
+        raise ValueError('normalize and normalize_by_first cannot both be True. Pick one method to normalize.')
 
     neurons = list()
     pulse_frames=list()
@@ -600,18 +723,25 @@ def find_stimulus_responsive(fish, pre_frame_num=4, post_frame_num=13, peak_thre
         pulses = pulse_frames[i]
         traces = list()
 
-        for pulse in pulses:
+        for p, pulse in enumerate(pulses):
             start_frame = pulse - pre_frame_num  # when the neuron traces will start
             stop_frame = pulse + post_frame_num  # when the neuron traces will end
 
             trace = neuron[start_frame:stop_frame+1]
+
+            if normalize or (normalize_by_first and p == 0):
+                baseline = np.mean(neuron[start_frame:pulse])
+                trace = trace - baseline
+            elif normalize_by_first and p != 0:
+                trace = trace - baseline
+
             traces.append(trace)
             
         avg_trace = np.array(traces).mean(axis=0)
 
         # To determine if a neuron is stimulus responsive, we will first calculate
         # the standard deviation of "pre".
-        pre_stdev = np.array(traces)[:, :pre_frame_num].std()
+        pre_stdev = np.array(avg_trace)[:pre_frame_num].std()
 
         response_count = 0  # to calculate how many injections the neuron responds to
         responsive = False
@@ -624,12 +754,12 @@ def find_stimulus_responsive(fish, pre_frame_num=4, post_frame_num=13, peak_thre
         # Activated neurons: If the peak response in "post" is bigger
         # than 1.8 times the "pre" standard deviation, the neuron is stimulus 
         # responsive
-        activated_thresh = np.array(traces)[:, :pre_frame_num].mean() + 1.8 * pre_stdev
+        activated_thresh = np.array(avg_trace)[:pre_frame_num].mean() + (2 * pre_stdev)
 
         # Inhibited neurons: If the minimum response in "post" is smaller
         # than 1.8 times the "pre" standard deviation, the neuron is stimulus 
         # responsive
-        inhibited_thresh = np.array(traces)[:, :pre_frame_num].mean() - 1.8 * pre_stdev
+        inhibited_thresh = np.array(avg_trace)[:pre_frame_num].mean() - (2 * pre_stdev)
 
         if check_if_activated(avg_trace, activated_thresh, pre_frame_num=pre_frame_num, peak_threshold=peak_threshold):
             responsive = True
@@ -639,12 +769,15 @@ def find_stimulus_responsive(fish, pre_frame_num=4, post_frame_num=13, peak_thre
 
             for t, trace in enumerate(traces):
                 # now let's determine how many of the stimuli individual neurons are responding to
-                if check_if_activated(trace, activated_thresh, pre_frame_num=pre_frame_num, peak_threshold=peak_threshold, baseline_threshold=baseline_threshold):
+                pre_stdev = np.array(trace)[:pre_frame_num].std()
+                activated_thresh = np.array(trace)[:pre_frame_num].mean() + (2 * pre_stdev)
+
+                if check_if_activated(trace, activated_thresh, pre_frame_num=pre_frame_num, peak_threshold=peak_threshold):
                     response_count += 1
                     neuron_pulse_response.append((t+1, 1))
                     print(f'neuron {i} responds to stimulus {t+1} (activated)')
 
-        elif check_if_inhibited(avg_trace, inhibited_thresh, pre_frame_num=pre_frame_num):
+        elif check_if_inhibited(avg_trace, inhibited_thresh, pre_frame_num=pre_frame_num, min_threshold=min_threshold):
             responsive = True
             stim_responsive_neurons.append(i)
             inhibited_neurons.append(i)
@@ -652,7 +785,10 @@ def find_stimulus_responsive(fish, pre_frame_num=4, post_frame_num=13, peak_thre
 
             for t, trace in enumerate(traces):
                 # now let's determine how many of the stimuli individual neurons are responding to
-                if check_if_inhibited(trace, inhibited_thresh, pre_frame_num=pre_frame_num):
+                pre_stdev = np.array(trace)[:pre_frame_num].std()
+                inhibited_thresh = np.array(trace)[:pre_frame_num].mean() - (2 * pre_stdev)
+
+                if check_if_inhibited(trace, inhibited_thresh, pre_frame_num=pre_frame_num, min_threshold=min_threshold):
                     response_count += 1
                     neuron_pulse_response.append((t+1, 0))
                     print(f'neuron {i} responds to stimulus {t+1} (inhibited)')
@@ -662,32 +798,58 @@ def find_stimulus_responsive(fish, pre_frame_num=4, post_frame_num=13, peak_thre
             pulse_responses.append(neuron_pulse_response)
 
     print(f'{len(stim_responsive_neurons)} out of {len(neurons)} neurons is stimulus responsive: {len(stim_responsive_neurons)/len(neurons)*100}%')
+    print(f'number of inhibited neurons: {len(inhibited_neurons)}')
+    
+    if len(stim_responsive_neurons) != 0:
+        print(f'% of inhibited neurons: {len(inhibited_neurons)/len(stim_responsive_neurons)*100}')
+    else:
+        print(f'% of inhibited neurons: 0%')
+
+    print(f'number of activated neurons: {len(activated_neurons)}')
+
+    if len(stim_responsive_neurons) != 0:
+        print(f'% of activated neurons: {len(activated_neurons)/len(stim_responsive_neurons)*100}')
+    else:
+        print(f'% of activated neurons: 0%')
 
     return stim_responsive_neurons, activated_neurons, inhibited_neurons, pulse_responses
 
 
-def check_if_activated(trace, threshold, pre_frame_num=4, peak_threshold=0.1, baseline_threshold=0.5):
+def check_if_activated(trace, threshold, pre_frame_num=15, peak_threshold=None):
     '''Checks if a neural trace is activated
     pre_frame_num: number of frames before the pulse. 4 frames is ~3 seconds'''
     peak_response = trace[pre_frame_num:].max()
     avg_baseline = trace[:pre_frame_num].mean()
 
+    if peak_threshold is None and avg_baseline != 0:
+        peak_threshold = abs(avg_baseline * 0.2) + avg_baseline
+    elif peak_threshold is None and avg_baseline == 0:
+        # if average baseline is normalized to be 0, set the peak threshold to 20%
+        peak_threshold = 0.2
+
     # Activated neurons: If the peak response in "post" is bigger
     # than the threshold, the neuron is stimulus responsive
-    if peak_response > threshold and peak_response > peak_threshold and avg_baseline <= baseline_threshold:
+    if peak_response > threshold and peak_response > peak_threshold:
         return True
     else:
         False
 
 
-def check_if_inhibited(trace, threshold, pre_frame_num=4):
+def check_if_inhibited(trace, threshold, pre_frame_num=15, min_threshold=None):
     '''Checks if a neural trace is inhibited
     pre_frame_num: number of frames before the pulse. 4 frames is ~3 seconds'''
     min_response = trace[pre_frame_num:].min()
+    avg_baseline = trace[:pre_frame_num].mean()
+
+    if min_threshold is None and avg_baseline != 0:
+        min_threshold = abs(avg_baseline * 0.2) - avg_baseline
+    elif min_threshold is None and avg_baseline == 0:
+        # if average baseline is normalized to be 0, set the min threshold to 20%
+        min_threshold = -0.2
 
     # Inhibited neurons: If the minimum response in "post" is smaller
     # than the threshold, the neuron is stimulus responsive
-    if min_response < threshold:
+    if min_response < threshold and min_response < min_threshold:
         return True
     else:
         False
@@ -698,13 +860,18 @@ def plot_stim_responsive_neuron_average():
     pass
 
 
-def plot_neuron_pulse_average(fish, pre_frame_num=4, post_frame_num=13, peak_threshold=0.1, key=None, savefig=False, n_cols=3, baseline_threshold=0.5):
+def plot_neuron_pulse_average(fish, pre_frame_num=15, post_frame_num=5, peak_threshold=None, min_threshold=None, key=None, savefig=False, 
+                              n_cols=3, normalize=False, normalize_by_first=False):
     '''Plots the average response of each neuron to the pulses'''
     if key is None:
-        key = 'raw_norm_dff'
+        key = 'raw_norm_temporal'
+
+    if normalize and normalize_by_first:
+        raise ValueError('normalize and normalize_by_first cannot both be True. Pick one method to normalize.')
     
     stim_responsive_neurons, _, _, _ = find_stimulus_responsive(fish, pre_frame_num=pre_frame_num, post_frame_num=post_frame_num, 
-                                                                peak_threshold=peak_threshold, key=key, baseline_threshold=baseline_threshold)
+                                                                peak_threshold=peak_threshold, min_threshold=min_threshold, key=key,
+                                                                normalize=normalize, normalize_by_first=normalize_by_first)
 
     neurons = list()
     pulse_frames=list()
@@ -724,11 +891,18 @@ def plot_neuron_pulse_average(fish, pre_frame_num=4, post_frame_num=13, peak_thr
         pulses = pulse_frames[i]
         traces = list()
 
-        for pulse in pulses:
+        for p, pulse in enumerate(pulses):
             start_frame = pulse - pre_frame_num  # when the neuron traces will start
             stop_frame = pulse + post_frame_num  # when the neuron traces will end
 
             trace = neuron[start_frame:stop_frame+1]
+
+            if normalize or (normalize_by_first and p == 0):
+                baseline = np.mean(neuron[start_frame:pulse])
+                trace = trace - baseline
+            elif normalize_by_first and p != 0:
+                trace = trace - baseline
+
             traces.append(trace)
 
             axes[img_row, int(i % n_cols)].plot(trace, 'lightgray')
@@ -775,24 +949,29 @@ def find_twitches(fish, plot=False, **kwargs):
             all_peaks[plane] = peaks
 
             if plot:
-                
-                pulse_frames = fish.temporal_df.loc[int(plane), 'pulse_frames']
+                try:
+                    pulse_frames = fish.temporal_df.loc[int(plane), 'pulse_frames']
 
-                fig = plt.figure(figsize=(10, 5))
-                plt.plot(np.sum(np.abs(x_shifts), axis=1), label='x_shifts')
-                plt.plot(np.sum(np.abs(y_shifts), axis=1), label='y_shifts')
-                plt.plot(shifts, label='total_shifts')
-                plt.plot(peaks, shifts[peaks], "x", label='twitch')
-                plt.title(f'plane {plane} - twitch frames: {peaks} - pulse frames: {pulse_frames}')
-                plt.legend()
+                    plt.figure(figsize=(10, 5))
+                    plt.plot(np.sum(np.abs(x_shifts), axis=1), label='x_shifts')
+                    plt.plot(np.sum(np.abs(y_shifts), axis=1), label='y_shifts')
+                    plt.plot(shifts, label='total_shifts')
+                    plt.plot(peaks, shifts[peaks], "x", label='twitch')
+                    plt.title(f'plane {plane} - twitch frames: {peaks} - pulse frames: {pulse_frames}')
+                    plt.legend()
+                
+                except KeyError:
+                    # we might not have any components identified in a plane
+                    pass
 
     return all_peaks
 
 
 def unroll_temporal_df(fish, **kwargs):
     '''Expands the temporal_df so that each row is a single neuron rather than a single plane'''
-    unrolled_df = pd.DataFrame(columns=['fish_id', 'plane', 'neuron', 'raw_temporal', 'temporal', 
-                                        'raw_dff', 'dff', 'raw_norm_dff', 'norm_dff', 
+    
+    unrolled_df = pd.DataFrame(columns=['fish_id', 'plane', 'neuron', 'raw_temporal', 'temporal', 'raw_norm_temporal', 'norm_temporal',
+                                        'raw_dff', 'dff', 'raw_norm_dff', 'norm_dff', 'raw_zscore', 'zscore', 'raw_percentile', 'percentile',
                                         'roi_index', 'pulse_frames'])
     
     neuron_count = -1
@@ -807,10 +986,16 @@ def unroll_temporal_df(fish, **kwargs):
             unrolled_row['neuron'] = neuron_count
             unrolled_row['raw_temporal'] = row['raw_temporal'][j]
             unrolled_row['temporal'] = row['temporal'][j]
+            unrolled_row['raw_norm_temporal'] = row['raw_norm_temporal'][j]
+            unrolled_row['norm_temporal'] = row['norm_temporal'][j]
             unrolled_row['raw_dff'] = row['raw_dff'][j]
             unrolled_row['dff'] = row['dff'][j]
             unrolled_row['raw_norm_dff'] = row['raw_norm_dff'][j]
             unrolled_row['norm_dff'] = row['norm_dff'][j]
+            unrolled_row['raw_zscore'] = row['raw_zscore'][j]
+            unrolled_row['zscore'] = row['zscore'][j]
+            unrolled_row['raw_percentile'] = row['raw_percentile'][j]
+            unrolled_row['percentile'] = row['percentile'][j]
             unrolled_row['roi_index'] = row['roi_indices'][j]
             unrolled_row['pulse_frames'] = row['pulse_frames']
 
