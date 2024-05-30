@@ -1,15 +1,23 @@
+from kneed import KneeLocator
 import matplotlib.pyplot as plt
 from matplotlib.cm import get_cmap
+from matplotlib import colormaps
 import matplotlib.ticker as ticker
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import numpy as np
 import os
 import pandas as pd
+import plotly.express as px
 import random
 import scipy.cluster.hierarchy as sch
 from scipy.cluster.vq import kmeans2
 from scipy.signal import find_peaks
-from scipy.stats import sem, gaussian_kde, zscore
+from scipy.stats import gaussian_kde, median_abs_deviation, sem, t, zscore
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
+from sklearn.metrics import auc
+from sklearn.preprocessing import StandardScaler
+import umap
 
 from .mesm import get_plane_number, load_mesmerize, load_rois, uuid_to_plane
 from .utils import save_pickle
@@ -24,7 +32,7 @@ def save_temporal(fish):
     planes = list()
     raw_temporal = list()
     temporal = list()
-    raw_dff = list()
+    # raw_dff = list()
     roi_indices = list()
     pulse_frames = list()
 
@@ -49,9 +57,9 @@ def save_temporal(fish):
                 temp = row.cnmf.get_temporal('good')  # denoised temporal responses: C
                 temporal.append(temp[indices])
 
-                row.cnmf.run_detrend_dfof()  # uses caiman's detrend_df_f function
-                F_dff = row.cnmf.get_detrend_dfof("good")  # detrended dF/F0 curves
-                raw_dff.append(F_dff[indices])
+                # row.cnmf.run_detrend_dfof()  # uses caiman's detrend_df_f function
+                # F_dff = row.cnmf.get_detrend_dfof("good")  # detrended dF/F0 curves
+                # raw_dff.append(F_dff[indices])
 
                 fts = pd.read_hdf(fish.data_paths['volumes'][plane]['frametimes'])
                 try:
@@ -70,7 +78,6 @@ def save_temporal(fish):
     temporal_df = pd.DataFrame({'plane': planes,
                                 'raw_temporal': raw_temporal,
                                 'temporal': temporal,
-                                'raw_dff': raw_dff,
                                 'roi_indices': roi_indices,
                                 'pulse_frames': pulse_frames})
     temporal_df.sort_values(by=['plane'], ignore_index=True, inplace=True)
@@ -122,10 +129,12 @@ def compute_median_dff(fish, window=None):
     If a window is an integer n, calculates baseline as the first n frames.
     If window is None, calculates baseline as the time before the first pulse.'''
     fish.temporal_df['dff'] = None
+    fish.temporal_df['raw_dff'] = None
 
     for i, row in fish.temporal_df.iterrows():
         pulse_0 = row.pulse_frames[0]
         dffs = list()
+        raw_dffs = list()
 
         for comp in row.temporal:  # for each component
             if window is None:
@@ -137,7 +146,18 @@ def compute_median_dff(fish, window=None):
             dff = (comp - f0)/abs(f0)
             dffs.append(dff)
 
+        for comp in row.raw_temporal:  # for each component
+            if window is None:
+                baseline = comp[:pulse_0]
+            else:
+                baseline = comp[:window]
+            
+            f0 = np.median(baseline)
+            dff = (comp - f0)/abs(f0)
+            raw_dffs.append(dff)
+
         fish.temporal_df['dff'][i] = dffs
+        fish.temporal_df['raw_dff'][i] = raw_dffs
 
     fish.temporal_df.to_hdf(fish.exp_path.joinpath('temporal.h5'), key='temporal')
 
@@ -182,7 +202,7 @@ def normalize_temporaldf(fish):
             norm_temporal = (comp - min(comp)) / (max(comp) - min(comp))
             norm_temporals.append(norm_temporal)
 
-        for comp in row.raw_dff:
+        for comp in row.raw_temporal:
             raw_norm_temporal = (comp - min(comp)) / (max(comp) - min(comp))
             raw_norm_temporals.append(raw_norm_temporal)
 
@@ -242,6 +262,232 @@ def percentile_norm_temporaldf(fish, percentile=75):
     fish.temporal_df.to_hdf(fish.exp_path.joinpath('temporal.h5'), key='temporal')
 
     return fish.temporal_df
+
+
+def umap_clustering(df, filterby=None, colorby=None, key='raw_norm_temporal', savefig=False, save_path=None):
+    '''UMAP clustering on individual neuron responses
+    filterby: runs separate clustering based on the filters
+    colorby: colors each point based on the filter'''
+    if savefig and save_path is None:
+        raise ValueError("Enter a save_path to save the figure")
+
+    if colorby not in df.columns:
+        raise ValueError("Given colorby filter is not a column in the df")
+
+    if filterby is not None:
+        for filter in filterby:
+            if filter not in df.columns:
+                raise ValueError("Given filter is not a column in the df")
+        filter_groups = df.groupby(filterby).size().reset_index()
+            
+        for _, row in filter_groups.iterrows():
+            conditions = [row[col] for col in filterby]
+
+            filters = list()
+            for col, cond in zip(filterby, conditions):
+                if isinstance(cond, str):
+                    filters.append(f"(df['{col}'] == '{cond}')")
+                else:
+                    filters.append(f"(df['{col}'] == {cond})")
+
+            subdf = df[eval(" & ".join(filters))]
+            traces = np.array(subdf.loc[:, key])
+            traces = np.array([np.array(trace) for trace in traces])
+                    
+            reducer = umap.UMAP(random_state=1113)
+            scaled_data = StandardScaler().fit_transform(traces)
+            embedding = reducer.fit_transform(scaled_data)
+                    
+            plt.figure(figsize=(10, 10))
+                    
+            # plot t-SNE embedding in two-dimentional space
+            if colorby is None:
+                plt.scatter(embedding[:, 0], embedding[:, 1])
+
+            else:
+                for filt in subdf[colorby].unique():
+                    plt.scatter(embedding[np.where(subdf[colorby] == filt), 0], embedding[np.where(subdf[colorby] == filt), 1], label=filt)
+
+            plt.legend()
+            plt.xlabel('UMAP_1')
+            plt.ylabel('UMAP_2')
+            plt.title(" - ".join([str(cond) for cond in conditions]), fontsize=18)
+
+            if savefig:
+                plt.savefig(save_path.joinpath("umap_clustering_" + "_".join([str(cond) for cond in conditions]) + ".pdf"), transparent=True)
+
+    else:
+        traces = np.array(df.loc[:, key])
+        traces = np.array([np.array(trace) for trace in traces])
+                
+        reducer = umap.UMAP(random_state=1113)
+        scaled_data = StandardScaler().fit_transform(traces)
+        embedding = reducer.fit_transform(scaled_data)
+                
+        plt.figure(figsize=(10, 10))
+                
+        # plot t-SNE embedding in two-dimentional space
+        if colorby is None:
+            plt.scatter(embedding[:, 0], embedding[:, 1])
+
+        else:
+            for filt in df[colorby].unique():
+                plt.scatter(embedding[np.where(df[colorby] == filt), 0], embedding[np.where(df[colorby] == filt), 1], label=filt)
+
+        plt.legend()
+        plt.xlabel('UMAP_1')
+        plt.ylabel('UMAP_2')
+        plt.title(" - ".join([str(cond) for cond in conditions]), fontsize=18)
+
+        if savefig:
+                plt.savefig(save_path.joinpath("umap_clustering.pdf"), transparent=True)
+
+
+def tsne_clustering(df, filterby=None, colorby=None, key='raw_norm_temporal', savefig=False, save_path=None):
+    '''t-SNE clustering on individual neuron responses
+    filterby: runs separate clustering based on the filters
+    colorby: colors each point based on the filter'''
+    if savefig and save_path is None:
+        raise ValueError("Enter a save_path to save the figure")
+
+    if colorby not in df.columns:
+        raise ValueError("Given colorby filter is not a column in the df")
+
+    if filterby is not None:
+        for filter in filterby:
+            if filter not in df.columns:
+                raise ValueError("Given filter is not a column in the df")
+        filter_groups = df.groupby(filterby).size().reset_index()
+            
+        for _, row in filter_groups.iterrows():
+            conditions = [row[col] for col in filterby]
+
+            filters = list()
+            for col, cond in zip(filterby, conditions):
+                if isinstance(cond, str):
+                    filters.append(f"(df['{col}'] == '{cond}')")
+                else:
+                    filters.append(f"(df['{col}'] == {cond})")
+
+            subdf = df[eval(" & ".join(filters))]
+            traces = np.array(subdf.loc[:, key])
+            traces = np.array([np.array(trace) for trace in traces])
+                    
+            X_embedded = TSNE(n_components=2, learning_rate='auto', init='random', random_state=888).fit_transform(traces)
+                    
+            plt.figure(figsize=(10, 10))
+                    
+            # plot t-SNE embedding in two-dimentional space
+            if colorby is None:
+                plt.scatter(X_embedded[:, 0], X_embedded[:, 1])
+
+            else:
+                for filt in subdf[colorby].unique():
+                    plt.scatter(X_embedded[np.where(subdf[colorby] == filt), 0], X_embedded[np.where(subdf[colorby] == filt), 1], label=filt)
+
+            plt.legend()
+            plt.xlabel('t-SNE_1')
+            plt.ylabel('t-SNE_2')
+            plt.title(" - ".join([str(cond) for cond in conditions]), fontsize=18)
+
+            if savefig:
+                plt.savefig(save_path.joinpath("tsne_clustering_" + "_".join([str(cond) for cond in conditions]) + ".pdf"), transparent=True)
+
+    else:
+        traces = np.array(df.loc[:, key])
+        traces = np.array([np.array(trace) for trace in traces])
+                
+        X_embedded = TSNE(n_components=2, learning_rate='auto', init='random', random_state=888).fit_transform(traces)
+                
+        plt.figure(figsize=(10, 10))
+                
+        # plot t-SNE embedding in two-dimentional space
+        if colorby is None:
+            plt.scatter(X_embedded[:, 0], X_embedded[:, 1])
+
+        else:
+            for filt in df[colorby].unique():
+                plt.scatter(X_embedded[np.where(df[colorby] == filt), 0], X_embedded[np.where(df[colorby] == filt), 1], label=filt)
+
+        plt.legend()
+        plt.xlabel('t-SNE_1')
+        plt.ylabel('t-SNE_2')
+        plt.title(" - ".join([str(cond) for cond in conditions]), fontsize=18)
+
+        if savefig:
+            plt.savefig(save_path.joinpath("tsne_clustering.pdf"), transparent=True)
+
+
+def pca_clustering(df, filterby=None, colorby=None, key='raw_norm_temporal'):
+	'''PCA clustering on individual neuron responses. Plots 3D components.
+	filterby: runs separate clustering based on the filters
+	colorby: colors each point based on the filter'''
+	if colorby not in df.columns:
+		raise ValueError("Given colorby filter is not a column in the df")
+
+	if filterby is not None:
+		for filter in filterby:
+			if filter not in df.columns:
+				raise ValueError("Given filter is not a column in the df")
+		filter_groups = df.groupby(filterby).size().reset_index()
+			
+		for _, row in filter_groups.iterrows():
+			conditions = [row[col] for col in filterby]
+
+			filters = list()
+			for col, cond in zip(filterby, conditions):
+				if isinstance(cond, str):
+					filters.append(f"(df['{col}'] == '{cond}')")
+				else:
+					filters.append(f"(df['{col}'] == {cond})")
+
+			subdf = df[eval(" & ".join(filters))]
+			traces = np.array(subdf.loc[:, key])
+			traces = np.array([np.array(trace) for trace in traces])
+					
+			pca = PCA(n_components=3)
+			components = pca.fit_transform(traces)
+
+			total_var = pca.explained_variance_ratio_.sum() * 100
+			
+			if colorby is not None:
+				fig = px.scatter_3d(
+					components, x=0, y=1, z=2, color=subdf[colorby],
+					title=" - ".join([str(cond) for cond in conditions]) + f' - Total Explained Variance: {total_var:.2f}%',
+					labels={'0': 'PC 1', '1': 'PC 2', '2': 'PC 3'}
+				)
+			else:
+				fig = px.scatter_3d(
+					components, x=0, y=1, z=2,
+					title=" - ".join([str(cond) for cond in conditions]) + f' - Total Explained Variance: {total_var:.2f}%',
+					labels={'0': 'PC 1', '1': 'PC 2', '2': 'PC 3'}
+				)
+
+			fig.show()
+
+	else:
+		traces = np.array(df.loc[:, key])
+		traces = np.array([np.array(trace) for trace in traces])
+				
+		pca = PCA(n_components=3)
+		components = pca.fit_transform(traces)
+
+		total_var = pca.explained_variance_ratio_.sum() * 100
+		
+		if colorby is not None:
+			fig = px.scatter_3d(
+				components, x=0, y=1, z=2, color=df[colorby],
+				title=" - ".join([str(cond) for cond in conditions]) + f' - Total Explained Variance: {total_var:.2f}%',
+				labels={'0': 'PC 1', '1': 'PC 2', '2': 'PC 3'}
+			)
+		else:
+			fig = px.scatter_3d(
+				components, x=0, y=1, z=2,
+				title=" - ".join([str(cond) for cond in conditions]) + f' - Total Explained Variance: {total_var:.2f}%',
+				labels={'0': 'PC 1', '1': 'PC 2', '2': 'PC 3'}
+			)
+
+		fig.show()
 
 
 def kmeans_clustering(data, k):
@@ -370,7 +616,7 @@ def cluster_temporal(fish, max_inter_cluster_dist, sort=True, savefig=False):
     
     fig = plt.figure(figsize=(25, 10))
     dn = sch.dendrogram(Z)
-    plt.hlines(max_inter_cluster_dist, 0, len(d), color='r')
+    plt.axhline(y=max_inter_cluster_dist, color='r')
     plt.title(f'Clustering: max_inter_cluster_dist={max_inter_cluster_dist}')
     plt.show()
 
@@ -400,7 +646,7 @@ def cluster_temporal(fish, max_inter_cluster_dist, sort=True, savefig=False):
     return fish.clusters
 
 
-def plot_heatmap(data, fps=1.3039181000348583, pulses=[391, 547, 704, 860, 1017]):
+def plot_heatmap(data, fps=1.3039181000348583, pulses=[391, 548, 704, 861, 1017]):
     '''Plots temporal components'''
     # Just simple heatmaps
     fig = plt.figure(figsize=(20, 10))
@@ -730,10 +976,10 @@ def find_stimulus_responsive(fish, pre_frame_num=15, post_frame_num=5, peak_thre
             trace = neuron[start_frame:stop_frame+1]
 
             if normalize or (normalize_by_first and p == 0):
-                baseline = np.mean(neuron[start_frame:pulse])
-                trace = trace - baseline
+                baseline = np.median(neuron[start_frame:pulse])
+                trace = (trace - baseline)/baseline
             elif normalize_by_first and p != 0:
-                trace = trace - baseline
+                trace = (trace - baseline)/baseline
 
             traces.append(trace)
             
@@ -752,14 +998,14 @@ def find_stimulus_responsive(fish, pre_frame_num=15, post_frame_num=5, peak_thre
         neuron_pulse_response = list()  
 
         # Activated neurons: If the peak response in "post" is bigger
-        # than 1.8 times the "pre" standard deviation, the neuron is stimulus 
+        # than 2 times the "pre" standard deviation, the neuron is stimulus 
         # responsive
-        activated_thresh = np.array(avg_trace)[:pre_frame_num].mean() + (2 * pre_stdev)
+        activated_thresh = np.median(np.array(avg_trace)[:pre_frame_num]) + (2 * pre_stdev)
 
         # Inhibited neurons: If the minimum response in "post" is smaller
-        # than 1.8 times the "pre" standard deviation, the neuron is stimulus 
+        # than 2 times the "pre" standard deviation, the neuron is stimulus 
         # responsive
-        inhibited_thresh = np.array(avg_trace)[:pre_frame_num].mean() - (2 * pre_stdev)
+        inhibited_thresh = np.median(np.array(avg_trace)[:pre_frame_num]) - (2 * pre_stdev)
 
         if check_if_activated(avg_trace, activated_thresh, pre_frame_num=pre_frame_num, peak_threshold=peak_threshold):
             responsive = True
@@ -770,7 +1016,7 @@ def find_stimulus_responsive(fish, pre_frame_num=15, post_frame_num=5, peak_thre
             for t, trace in enumerate(traces):
                 # now let's determine how many of the stimuli individual neurons are responding to
                 pre_stdev = np.array(trace)[:pre_frame_num].std()
-                activated_thresh = np.array(trace)[:pre_frame_num].mean() + (2 * pre_stdev)
+                activated_thresh = np.median(np.array(trace)[:pre_frame_num]) + (2 * pre_stdev)
 
                 if check_if_activated(trace, activated_thresh, pre_frame_num=pre_frame_num, peak_threshold=peak_threshold):
                     response_count += 1
@@ -786,7 +1032,7 @@ def find_stimulus_responsive(fish, pre_frame_num=15, post_frame_num=5, peak_thre
             for t, trace in enumerate(traces):
                 # now let's determine how many of the stimuli individual neurons are responding to
                 pre_stdev = np.array(trace)[:pre_frame_num].std()
-                inhibited_thresh = np.array(trace)[:pre_frame_num].mean() - (2 * pre_stdev)
+                inhibited_thresh = np.median(np.array(trace)[:pre_frame_num]) - (2 * pre_stdev)
 
                 if check_if_inhibited(trace, inhibited_thresh, pre_frame_num=pre_frame_num, min_threshold=min_threshold):
                     response_count += 1
@@ -819,11 +1065,11 @@ def check_if_activated(trace, threshold, pre_frame_num=15, peak_threshold=None):
     '''Checks if a neural trace is activated
     pre_frame_num: number of frames before the pulse. 4 frames is ~3 seconds'''
     peak_response = trace[pre_frame_num:].max()
-    avg_baseline = trace[:pre_frame_num].mean()
+    mdn_baseline = np.median(trace[:pre_frame_num])
 
-    if peak_threshold is None and avg_baseline != 0:
-        peak_threshold = abs(avg_baseline * 0.2) + avg_baseline
-    elif peak_threshold is None and avg_baseline == 0:
+    if peak_threshold is None and mdn_baseline != 0:
+        peak_threshold = abs(mdn_baseline * 0.2) + mdn_baseline
+    elif peak_threshold is None and mdn_baseline == 0:
         # if average baseline is normalized to be 0, set the peak threshold to 20%
         peak_threshold = 0.2
 
@@ -839,11 +1085,11 @@ def check_if_inhibited(trace, threshold, pre_frame_num=15, min_threshold=None):
     '''Checks if a neural trace is inhibited
     pre_frame_num: number of frames before the pulse. 4 frames is ~3 seconds'''
     min_response = trace[pre_frame_num:].min()
-    avg_baseline = trace[:pre_frame_num].mean()
+    mdn_baseline = np.median(trace[:pre_frame_num])
 
-    if min_threshold is None and avg_baseline != 0:
-        min_threshold = abs(avg_baseline * 0.2) - avg_baseline
-    elif min_threshold is None and avg_baseline == 0:
+    if min_threshold is None and mdn_baseline != 0:
+        min_threshold = abs(mdn_baseline * 0.2) - mdn_baseline
+    elif min_threshold is None and mdn_baseline == 0:
         # if average baseline is normalized to be 0, set the min threshold to 20%
         min_threshold = -0.2
 
@@ -855,13 +1101,8 @@ def check_if_inhibited(trace, threshold, pre_frame_num=15, min_threshold=None):
         False
 
 
-def plot_stim_responsive_neuron_average():
-    '''TODO: Plots the average of stimulus responsive neurons'''
-    pass
-
-
 def plot_neuron_pulse_average(fish, pre_frame_num=15, post_frame_num=5, peak_threshold=None, min_threshold=None, key=None, savefig=False, 
-                              n_cols=3, normalize=False, normalize_by_first=False):
+                              n_cols=3, normalize=False, normalize_by_first=False, sharey=True):
     '''Plots the average response of each neuron to the pulses'''
     if key is None:
         key = 'raw_norm_temporal'
@@ -883,7 +1124,7 @@ def plot_neuron_pulse_average(fish, pre_frame_num=15, post_frame_num=5, peak_thr
             pulse_frames.append(row['pulse_frames'])
 
     n_rows = np.ceil(len(neurons) / n_cols)
-    fig, axes = plt.subplots(int(n_rows), n_cols, sharex=True, sharey=True, figsize=(5*n_cols, np.ceil(len(neurons) / n_cols) * 5), layout='constrained')
+    fig, axes = plt.subplots(int(n_rows), n_cols, sharex=True, sharey=sharey, figsize=(5*n_cols, np.ceil(len(neurons) / n_cols) * 5), layout='constrained')
 
     for i, neuron in enumerate(neurons):
         img_row = int(i / n_cols)
@@ -898,10 +1139,10 @@ def plot_neuron_pulse_average(fish, pre_frame_num=15, post_frame_num=5, peak_thr
             trace = neuron[start_frame:stop_frame+1]
 
             if normalize or (normalize_by_first and p == 0):
-                baseline = np.mean(neuron[start_frame:pulse])
-                trace = trace - baseline
+                baseline = np.median(neuron[start_frame:pulse])
+                trace = (trace - baseline) / baseline
             elif normalize_by_first and p != 0:
-                trace = trace - baseline
+                trace = (trace - baseline) / baseline
 
             traces.append(trace)
 
@@ -930,8 +1171,7 @@ def plot_neuron_pulse_average(fish, pre_frame_num=15, post_frame_num=5, peak_thr
     
 
 def find_twitches(fish, plot=False, **kwargs):
-    '''Finds twitch events using x and y shifts from motion correction
-    prominence: prominence of shift peaks to determine twitch events'''
+    '''Finds twitch events using x and y shifts from motion correction'''
     mes_df = uuid_to_plane(load_mesmerize(fish))
 
     all_peaks = dict()  # stores all the peaks for each plane
@@ -971,8 +1211,7 @@ def unroll_temporal_df(fish, **kwargs):
     '''Expands the temporal_df so that each row is a single neuron rather than a single plane'''
     
     unrolled_df = pd.DataFrame(columns=['fish_id', 'plane', 'neuron', 'raw_temporal', 'temporal', 'raw_norm_temporal', 'norm_temporal',
-                                        'raw_dff', 'dff', 'raw_norm_dff', 'norm_dff', 'raw_zscore', 'zscore', 'raw_percentile', 'percentile',
-                                        'roi_index', 'pulse_frames'])
+                                        'raw_dff', 'dff', 'raw_norm_dff', 'norm_dff', 'roi_index', 'pulse_frames'])
     
     neuron_count = -1
     for i, row in fish.temporal_df.iterrows():
@@ -992,10 +1231,6 @@ def unroll_temporal_df(fish, **kwargs):
             unrolled_row['dff'] = row['dff'][j]
             unrolled_row['raw_norm_dff'] = row['raw_norm_dff'][j]
             unrolled_row['norm_dff'] = row['norm_dff'][j]
-            unrolled_row['raw_zscore'] = row['raw_zscore'][j]
-            unrolled_row['zscore'] = row['zscore'][j]
-            unrolled_row['raw_percentile'] = row['raw_percentile'][j]
-            unrolled_row['percentile'] = row['percentile'][j]
             unrolled_row['roi_index'] = row['roi_indices'][j]
             unrolled_row['pulse_frames'] = row['pulse_frames']
 
@@ -1026,3 +1261,664 @@ def unroll_temporal_df(fish, **kwargs):
     fish.process_bruker_filestructure()
 
     return unrolled_df
+
+
+def determine_baseline_oscillations(unrolled_df, oscillations=5, pre_frame_num=100, post_frame_num=0, show_peak_example=False):
+    '''Determine how long the baseline frame duration should be using oscillations
+    oscillations: determines the typical frame length of this many oscillations'''
+
+    traces = list()
+    x = np.arange(0-pre_frame_num, 0+post_frame_num)
+
+    for _, neuron in unrolled_df.iterrows():
+        pulses = neuron['pulse_frames']
+        
+        for pulse in pulses:
+            start_frame = pulse - pre_frame_num  # when the neuron traces will start
+            stop_frame = pulse  # when the neuron traces will end
+
+            trace = neuron['raw_norm_temporal'][start_frame:stop_frame]
+            traces.append(trace)
+
+    n_peaks = list()
+    for i, trace in enumerate(traces):
+        peaks, _ = find_peaks(trace)
+
+        if show_peak_example and i == 0:
+            plt.plot(trace)
+            plt.plot(peaks, trace[peaks], "x")
+            plt.ylim(0, 1)
+            plt.show()
+        
+        n_peaks.append(len(peaks))
+
+    n, bins, _ = plt.hist(n_peaks, bins=np.arange(np.array(n_peaks).min(), np.array(n_peaks).max()+2)-0.5, density=True, align='mid')
+    plt.xlabel('# of peaks in 100 frames')
+    plt.show()
+
+    print(f"ideal number of frames: {oscillations*len(x)/bins[np.argmax(n)]}")
+
+    
+def determine_baseline_sem(unrolled_df, pre_frame_num=100):
+    '''Determine how long the baseline frame duration should be using the SEM'''
+
+    x = np.arange(1, pre_frame_num+1)
+
+    sems = list()
+    for t in x:
+        traces = list()
+        for _, neuron in unrolled_df.iterrows():
+            pulses = neuron['pulse_frames']
+            
+            for pulse in pulses:
+                start_frame = pulse - t  # when the neuron traces will start
+                stop_frame = pulse  # when the neuron traces will end
+
+                trace = neuron['raw_norm_dff'][start_frame:stop_frame]
+                traces.extend(trace)
+
+        sems.append(sem(traces))
+
+    kn = KneeLocator(x, sems, curve='convex', direction='decreasing')
+
+    plt.plot(x, sems)
+    plt.vlines(kn.knee, 0, plt.ylim()[1], linestyles='dashed')
+    plt.ylim(0)
+    plt.xticks(np.arange(0, 101, 5))
+    _, labels = plt.xticks()
+    for label in labels[1::2]:
+        label.set_visible(False)
+    plt.xlabel('# of frames before injection')
+    plt.ylabel('sem of trace values')
+    plt.show()
+
+    print(f"ideal number of frames: {kn.knee}")
+
+
+def determine_baseline_mad(unrolled_df, pre_frame_num=100):
+    '''Determine how long the baseline frame duration should be using the SEM'''
+
+    x = np.arange(1, pre_frame_num+1)
+
+    mads = list()
+    for t in x:
+        traces = list()
+        for _, neuron in unrolled_df.iterrows():
+            pulses = neuron['pulse_frames']
+            
+            for pulse in pulses:
+                start_frame = pulse - t  # when the neuron traces will start
+                stop_frame = pulse  # when the neuron traces will end
+
+                trace = neuron['raw_norm_dff'][start_frame:stop_frame]
+                traces.extend(trace)
+
+        mads.append(median_abs_deviation(traces, axis=None))
+
+    kn = KneeLocator(x, mads, curve='convex', direction='decreasing')
+
+    plt.plot(x, mads)
+    plt.vlines(kn.knee, 0, plt.ylim()[1], linestyles='dashed')
+    plt.ylim(0)
+    plt.xticks(np.arange(0, 101, 5))
+    _, labels = plt.xticks()
+    for label in labels[1::2]:
+        label.set_visible(False)
+    plt.xlabel('# of frames before injection')
+    plt.ylabel('MAD of trace values')
+    plt.show()
+
+    print(f"ideal number of frames: {kn.knee}")
+
+
+def get_traces(df, pre_frame_num=0, post_frame_num=10, normalize=False, normalize_by_first=False, key='raw_norm_temporal', only_responsive=False, overlay_filter=None):
+    '''From a temporal_df, gets desired traces around pulses
+    Returns the x-axis (in frames) and list of individual traces'''
+    x = np.arange(0-pre_frame_num, 0+post_frame_num+1)
+
+    if overlay_filter is not None:
+        overlay_filters = list()
+
+    traces = list()
+    for _, neuron in df.iterrows():
+        pulses = neuron['pulse_frames']
+
+        if only_responsive:
+            responsive_pulses = [pr[0] for pr in neuron['pulse_response']]  # individual pulses that the neuron responded to
+            pulse_activity = [pr[1] for pr in neuron['pulse_response']]  # if 1, activated, if 0, inhibited
+
+            if normalize_by_first:
+                baseline = 0
+
+            for i, pulse in enumerate(responsive_pulses):
+                if (pulse_activity[i] == 1 and neuron['activated'] == True) or (pulse_activity[i] == 0 and neuron['inhibited'] == True):
+                    start_frame = pulses[pulse-1] - pre_frame_num  # when the neuron traces will start
+                    stop_frame = pulses[pulse-1] + post_frame_num  # when the neuron traces will end
+
+                    trace = neuron[key][start_frame:stop_frame+1]
+
+                    if normalize:
+                        baseline = np.median(neuron[key][start_frame:pulses[pulse-1]])
+                        trace = (trace - baseline) / baseline
+                    elif normalize_by_first and i == 0:
+                        baseline = np.median(neuron[key][start_frame:pulses[pulse-1]])
+                        trace = (trace - baseline) / baseline
+                    
+                    traces.append(trace)
+
+                    if overlay_filter is not None:
+                        overlay_filters.append(neuron[overlay_filter])
+
+        else:
+            if normalize_by_first:
+                baseline = 0
+
+            for i, pulse in enumerate(pulses):
+                start_frame = pulse - pre_frame_num  # when the neuron traces will start
+                stop_frame = pulse + post_frame_num  # when the neuron traces will end
+
+                trace = neuron[key][start_frame:stop_frame+1]
+
+                if normalize:
+                    baseline = np.median(neuron[key][start_frame:pulse])
+                elif normalize_by_first and i == 0:
+                    baseline = np.median(neuron[key][start_frame:pulse])
+
+                trace = (trace - baseline) / baseline
+                traces.append(trace)
+
+                if overlay_filter is not None:
+                    overlay_filters.append(neuron[overlay_filter])
+
+    if overlay_filter is not None:
+        return x, traces, overlay_filters
+    else:
+        return x, traces
+
+
+def plot_pulse_averages(df, filterby, savefig=False, save_path=None, **kwargs):
+    '''Plot the pulse averages for each neuron, with individual pulse traces'''
+    if savefig and save_path is None:
+        raise ValueError("Enter a save_path to save the figure")
+    
+    for filter in filterby:
+        if filter not in df.columns:
+            raise ValueError("Given filter is not a column in the df")
+        
+    filter_groups = df.groupby(filterby).size().reset_index()
+
+    for _, row in filter_groups.iterrows():
+        conditions = [row[col] for col in filterby]
+
+        filters = list()
+        for col, cond in zip(filterby, conditions):
+            if isinstance(cond, str):
+                filters.append(f"(df['{col}'] == '{cond}')")
+            else:
+                filters.append(f"(df['{col}'] == {cond})")
+
+        subdf = df[eval(" & ".join(filters))]
+        x, traces = get_traces(subdf, **kwargs)
+
+        plt.figure(figsize=(10, 10))
+
+        for trace in traces:
+            plt.plot(x, trace, 'lightgray', alpha=0.5)
+
+        avg_trace = np.mean(np.array(traces), axis=0)
+        sems = sem(np.array(traces), axis=0)
+
+        try:
+            plt.plot (x, avg_trace, zorder=102)
+            plt.fill_between(x, avg_trace-sems, avg_trace+sems, alpha=0.2, zorder=101)
+            plt.axvspan(-1, 0, color='red', lw=2, alpha=0.2, ec=None, zorder=100)
+
+            plt.ylim(top=20, bottom=-2)
+
+            # if normalize or normalize_by_first:
+            #     plt.ylim(top=1, bottom=-0.50)
+            # else:
+            #     plt.ylim(top=1, bottom=0)
+                
+            plt.title(" - ".join([str(cond) for cond in conditions]), fontsize=18)
+            
+            if savefig:
+                plt.savefig(save_path.joinpath("pulse_average_" + "_".join([str(cond) for cond in conditions]) + ".pdf"), transparent=True)
+
+            plt.show()
+        
+        except ValueError:
+            # sometimes there aren't any neurons that belong to the category, so everything is None
+            pass
+
+
+def plot_pulse_averages_overlayed(df, overlay_filter, filterby, overlay_order=None, savefig=False, save_path=None, **kwargs):
+    '''Plots the pulse averages from different filters overlayed on top'''
+    if savefig and save_path is None:
+        raise ValueError("Enter a save_path to save the figure")
+    
+    for filter in filterby:
+        if filter not in df.columns:
+            raise ValueError("Given filter is not a column in the df")
+        
+    if overlay_filter not in df.columns:
+        raise ValueError("Given overlay_filter is not a column in the df")
+        
+    filter_groups = df.groupby(filterby).size().reset_index()
+
+    for _, row in filter_groups.iterrows():
+        conditions = [row[col] for col in filterby]
+
+        filters = list()
+        for col, cond in zip(filterby, conditions):
+            if isinstance(cond, str):
+                filters.append(f"(df['{col}'] == '{cond}')")
+            else:
+                filters.append(f"(df['{col}'] == {cond})")
+
+        subdf = df[eval(" & ".join(filters))]
+        x, traces, overlay_filters = get_traces(subdf, overlay_filter=overlay_filter, **kwargs)
+
+        plt.figure(figsize=(10, 10))
+
+        if overlay_order is not None:  # if you want the overlay_filters to go in a specific order
+            for of in overlay_order:
+                tr = np.array(traces)[np.where(np.array(overlay_filters) == of)[0]]
+                avg_trace = np.mean(np.array(tr), axis=0)
+                sems = sem(np.array(tr), axis=0)
+
+                plt.plot (x, avg_trace, zorder=102, label=f'{of}, n={len(subdf[subdf[overlay_filter] == of])}')
+                plt.fill_between(x, avg_trace-sems, avg_trace+sems, alpha=0.2, zorder=101)
+
+        else:  # if you don't care about the order, it will just find the unique overlay filters
+            for of in np.unique(overlay_filters):
+                tr = np.array(traces)[np.where(np.array(overlay_filters) == of)[0]]
+                avg_trace = np.mean(np.array(tr), axis=0)
+                sems = sem(np.array(tr), axis=0)
+
+                plt.plot (x, avg_trace, zorder=102, label=f'{of}, n={len(subdf[subdf[overlay_filter] == of])}')
+                plt.fill_between(x, avg_trace-sems, avg_trace+sems, alpha=0.2, zorder=101)
+
+        plt.axvspan(-1, 0, color='red', lw=2, alpha=0.2, ec=None, zorder=100)
+        plt.legend()
+
+        plt.ylim(top=2, bottom=-0.50)
+
+        # if normalize or normalize_by_first:
+        #     plt.ylim(top=1, bottom=-0.50)
+        # else:
+        #     plt.ylim(top=1, bottom=0)
+            
+        plt.title(" - ".join([str(cond) for cond in conditions]), fontsize=18)
+
+        if savefig:
+            plt.savefig(save_path.joinpath("pulse_average_by_" + overlay_filter + "_" + "_".join([str(cond) for cond in conditions]) + ".pdf"), transparent=True)
+
+
+def calculate_aucs(df, filterby, auc_frame_nums=list(), **kwargs):
+    '''Calculates the area under the curve for each filter
+    auc_frame_nums: indices of traces to retrieve AUCs from. first item should be the start index and the second item should be the stop index (included)'''
+    for filter in filterby:
+        if filter not in df.columns:
+            raise ValueError("Given filter is not a column in the df")
+        
+    filter_groups = df.groupby(filterby).size().reset_index()
+
+    aucs = dict()
+
+    for _, row in filter_groups.iterrows():
+        conditions = [row[col] for col in filterby]
+
+        filters = list()
+        for col, cond in zip(filterby, conditions):
+            if isinstance(cond, str):
+                filters.append(f"(df['{col}'] == '{cond}')")
+            else:
+                filters.append(f"(df['{col}'] == {cond})")
+
+        subdf = df[eval(" & ".join(filters))]
+        x, traces = get_traces(subdf, **kwargs)
+
+        if auc_frame_nums is not None:
+            x = x[auc_frame_nums[0]:auc_frame_nums[1]+1]
+            traces = [trace[auc_frame_nums[0]:auc_frame_nums[1]+1] for trace in traces]
+
+        aucs[" - ".join([str(cond) for cond in conditions])] = [auc(x, trace) for trace in traces]
+
+    aucs = dict([(k,pd.Series(v)) for k,v in aucs.items()])
+    print(aucs)
+    pd.DataFrame(aucs).to_clipboard()
+
+
+def plot_individual_pulses(df, filterby, pre_frame_num=15, post_frame_num=30, normalize=False, normalize_by_first=False, key='raw_norm_temporal', only_responsive=False, savefig=False, save_path=None):
+    '''Separates each pulse and plots averages per pulse'''
+    if savefig and save_path is None:
+        raise ValueError("Enter a save_path to save the figure")
+    
+    for filter in filterby:
+        if filter not in df.columns:
+            raise ValueError("Given filter is not a column in the df")
+        
+    filter_groups = df.groupby(filterby).size().reset_index()
+
+    for _, row in filter_groups.iterrows():
+        conditions = [row[col] for col in filterby]
+
+        filters = list()
+        for col, cond in zip(filterby, conditions):
+            if isinstance(cond, str):
+                filters.append(f"(df['{col}'] == '{cond}')")
+            else:
+                filters.append(f"(df['{col}'] == {cond})")
+
+        subdf = df[eval(" & ".join(filters))]
+
+        max_n_pulses = np.max([len(pf) for pf in df['pulse_frames']])
+
+        traces = dict()
+
+        fig, axs = plt.subplots(1, max_n_pulses, figsize=(max_n_pulses*10, 10))
+        x = np.arange(0-pre_frame_num, 0+post_frame_num+1)
+
+        for _, neuron in subdf.iterrows():
+            pulses = neuron['pulse_frames']
+
+            if only_responsive:
+                responsive_pulses = [pr[0] for pr in neuron['pulse_response']]  # individual pulses that the neuron responded to
+                pulse_activity = [pr[1] for pr in neuron['pulse_response']]  # if 1, activated, if 0, inhibited
+
+                if normalize_by_first:
+                    baseline = 0
+
+                for i, pulse in enumerate(responsive_pulses):
+                    if (pulse_activity[i] == 1 and neuron['activated'] == True) or (pulse_activity[i] == 0 and neuron['inhibited'] == True):
+                        start_frame = pulses[pulse-1] - pre_frame_num  # when the neuron traces will start
+                        stop_frame = pulses[pulse-1] + post_frame_num  # when the neuron traces will end
+
+                        trace = neuron[key][start_frame:stop_frame+1]
+
+                        if normalize:
+                            baseline = np.mean(neuron[key][start_frame:pulses[pulse-1]])
+                        elif normalize_by_first and i == 0:
+                            baseline = np.mean(neuron[key][start_frame:pulses[pulse-1]])
+
+                        trace = trace - baseline
+
+                        if pulse not in traces:
+                            traces[pulse] = list()
+
+                        traces[pulse].append(trace)
+
+                        axs[pulse-1].plot(x, trace, 'lightgray', alpha=0.5)
+
+            else:
+                if normalize_by_first:
+                    baseline = 0
+
+                for i, pulse in enumerate(pulses):
+                    start_frame = pulse - pre_frame_num  # when the neuron traces will start
+                    stop_frame = pulse + post_frame_num  # when the neuron traces will end
+
+                    trace = neuron[key][start_frame:stop_frame+1]
+
+                    if normalize:
+                        baseline = np.mean(neuron[key][start_frame:pulse])
+                    elif normalize_by_first and i == 0:
+                        baseline = np.mean(neuron[key][start_frame:pulse])
+
+                    trace = trace - baseline
+
+                    if i+1 not in traces:
+                        traces[i+1] = list()
+
+                    traces[i+1].append(trace)
+
+                    axs[i].plot(x, trace, 'lightgray', alpha=0.5)
+
+        for pulse in traces:
+            avg_trace = np.array(traces[pulse]).mean(axis=0)
+            sems = sem(np.array(traces[pulse]), axis=0)
+
+            axs[pulse-1].plot (x, avg_trace, zorder=102)
+            axs[pulse-1].fill_between(x, avg_trace-sems, avg_trace+sems, alpha=0.2, zorder=101)
+            axs[pulse-1].axvspan(-1, 0, color='red', lw=2, alpha=0.2, ec=None, zorder=100)
+
+            if normalize or normalize_by_first:
+                axs[pulse-1].set_ylim(top=1, bottom=-0.50)
+            else:
+                axs[pulse-1].set_ylim(top=1, bottom=0)
+
+            axs[pulse-1].set_title(pulse, fontsize=36)
+                    
+        plt.suptitle(" - ".join([str(cond) for cond in conditions]), fontsize=42)
+
+        if savefig and not only_responsive:
+            plt.savefig(save_path.joinpath("individual_pulses_" + "_".join([str(cond) for cond in conditions]) + "_all.pdf"), transparent=True)
+        elif savefig and only_responsive:
+            plt.savefig(save_path.joinpath("individual_pulses_" + "_".join([str(cond) for cond in conditions]) + ".pdf"), transparent=True)
+
+        plt.show()
+    
+
+def plot_individual_pulses_overlayed(df, overlay_filter, filterby, pre_frame_num=15, post_frame_num=30, normalize=False, normalize_by_first=False, key='raw_norm_temporal', only_responsive=False, savefig=False, save_path=None):
+    '''Separates each pulse and plots averages from different filters overlayed on top'''
+    if savefig and save_path is None:
+        raise ValueError("Enter a save_path to save the figure")
+    
+    for filter in filterby:
+        if filter not in df.columns:
+            raise ValueError("Given filter is not a column in the df")
+        
+    if overlay_filter not in df.columns:
+        raise ValueError("Given overlay_filter is not a column in the df")
+        
+    filter_groups = df.groupby(filterby).size().reset_index()
+
+    for _, row in filter_groups.iterrows():
+        conditions = [row[col] for col in filterby]
+
+        filters = list()
+        for col, cond in zip(filterby, conditions):
+            if isinstance(cond, str):
+                filters.append(f"(df['{col}'] == '{cond}')")
+            else:
+                filters.append(f"(df['{col}'] == {cond})")
+
+        subdf = df[eval(" & ".join(filters))]
+
+        max_n_pulses = np.max([len(pf) for pf in df['pulse_frames']])
+
+        traces = dict()
+        overlay_filters = dict()
+
+        fig, axs = plt.subplots(1, max_n_pulses, figsize=(max_n_pulses*10, 10))
+        x = np.arange(0-pre_frame_num, 0+post_frame_num+1)
+
+        for _, neuron in subdf.iterrows():
+            pulses = neuron['pulse_frames']
+
+            if only_responsive:
+                responsive_pulses = [pr[0] for pr in neuron['pulse_response']]  # individual pulses that the neuron responded to
+                pulse_activity = [pr[1] for pr in neuron['pulse_response']]  # if 1, activated, if 0, inhibited
+
+                if normalize_by_first:
+                    baseline = 0
+                
+                for i, pulse in enumerate(responsive_pulses):
+                    if (pulse_activity[i] == 1 and neuron['activated'] == True) or (pulse_activity[i] == 0 and neuron['inhibited'] == True):
+                        start_frame = pulses[pulse-1] - pre_frame_num  # when the neuron traces will start
+                        stop_frame = pulses[pulse-1] + post_frame_num  # when the neuron traces will end
+
+                        trace = neuron[key][start_frame:stop_frame+1]
+
+                        if normalize:
+                            baseline = np.mean(neuron[key][start_frame:pulses[pulse-1]])
+                        elif normalize_by_first and i == 0:
+                            baseline = np.mean(neuron[key][start_frame:pulses[pulse-1]])
+
+                        trace = trace - baseline
+
+                        if pulse not in traces:
+                            traces[pulse] = list()
+                            overlay_filters[pulse] = list()
+                        
+                        traces[pulse].append(trace)
+                        overlay_filters[pulse].append(neuron[overlay_filter])
+                        # axs[pulse-1].plot(x, trace, 'lightgray', alpha=0.5)
+
+            else:
+                if normalize_by_first:
+                    baseline = 0
+
+                for i, pulse in enumerate(pulses):
+                    start_frame = pulse - pre_frame_num  # when the neuron traces will start
+                    stop_frame = pulse + post_frame_num  # when the neuron traces will end
+
+                    trace = neuron[key][start_frame:stop_frame+1]
+
+                    if normalize:
+                        baseline = np.mean(neuron[key][start_frame:pulse])
+                    elif normalize_by_first and i == 0:
+                        baseline = np.mean(neuron[key][start_frame:pulse])
+
+                    trace = trace - baseline
+
+                    if i+1 not in traces:
+                        traces[i+1] = list()
+                        overlay_filters[i+1] = list()
+                    
+                    traces[i+1].append(trace)
+                    overlay_filters.append(neuron[overlay_filter])
+                    # axs[i].plot(x, trace, 'lightgray', alpha=0.5)
+
+        for pulse in traces:
+            for of in np.unique(overlay_filters[pulse]):
+                tr = np.array(traces[pulse])[np.where(np.array(overlay_filters[pulse]) == of)[0]]
+                avg_trace = np.array(tr).mean(axis=0)
+                sems = sem(np.array(tr), axis=0)
+
+                axs[pulse-1].plot (x, avg_trace, zorder=102, label=of)
+                axs[pulse-1].fill_between(x, avg_trace-sems, avg_trace+sems, alpha=0.2, zorder=101)
+            
+            axs[pulse-1].axvspan(-1, 0, color='red', lw=2, alpha=0.2, ec=None, zorder=100)
+            axs[pulse-1].legend()
+
+            if normalize or normalize_by_first:
+                axs[pulse-1].set_ylim(top=1, bottom=-0.50)
+            else:
+                axs[pulse-1].set_ylim(top=1, bottom=0)
+
+            axs[pulse-1].set_title(pulse, fontsize=36)
+            
+        plt.suptitle(" - ".join([str(cond) for cond in conditions]), fontsize=42)
+
+        if savefig and not only_responsive:
+            plt.savefig(save_path.joinpath("individual_pulses_by_" + overlay_filter + "_" + "_".join([str(cond) for cond in conditions]) + "_all.pdf"), transparent=True)
+        elif savefig and only_responsive:
+            plt.savefig(save_path.joinpath("individual_pulses_by_" + overlay_filter + "_" + "_".join([str(cond) for cond in conditions]) + ".pdf"), transparent=True)
+
+
+def plot_pulses_overlayed(df, filterby, pre_frame_num=15, post_frame_num=30, normalize=False, normalize_by_first=False, key='raw_norm_temporal', only_responsive=False, savefig=False, save_path=None):
+    '''Plots averages from each pulse overlayed on top'''
+    if savefig and save_path is None:
+        raise ValueError("Enter a save_path to save the figure")
+    
+    for filter in filterby:
+        if filter not in df.columns:
+            raise ValueError("Given filter is not a column in the df")
+        
+    filter_groups = df.groupby(filterby).size().reset_index()
+
+    for _, row in filter_groups.iterrows():
+        conditions = [row[col] for col in filterby]
+
+        filters = list()
+        for col, cond in zip(filterby, conditions):
+            if isinstance(cond, str):
+                filters.append(f"(df['{col}'] == '{cond}')")
+            else:
+                filters.append(f"(df['{col}'] == {cond})")
+
+        subdf = df[eval(" & ".join(filters))]
+
+        traces = dict()
+
+        plt.figure(figsize=(10, 10))
+        x = np.arange(0-pre_frame_num, 0+post_frame_num+1)
+
+        for _, neuron in subdf.iterrows():
+            pulses = neuron['pulse_frames']
+
+            if only_responsive:
+                responsive_pulses = [pr[0] for pr in neuron['pulse_response']]  # individual pulses that the neuron responded to
+                pulse_activity = [pr[1] for pr in neuron['pulse_response']]  # if 1, activated, if 0, inhibited
+
+                if normalize_by_first:
+                    baseline = 0
+                
+                for i, pulse in enumerate(responsive_pulses):
+                    if (pulse_activity[i] == 1 and neuron['activated'] == True) or (pulse_activity[i] == 0 and neuron['inhibited'] == True):
+                        start_frame = pulses[pulse-1] - pre_frame_num  # when the neuron traces will start
+                        stop_frame = pulses[pulse-1] + post_frame_num  # when the neuron traces will end
+
+                        trace = neuron[key][start_frame:stop_frame+1]
+
+                        if normalize:
+                            baseline = np.mean(neuron[key][start_frame:pulses[pulse-1]])
+                        elif normalize_by_first and i == 0:
+                            baseline = np.mean(neuron[key][start_frame:pulses[pulse-1]])
+
+                        trace = trace - baseline
+
+                        if pulse not in traces:
+                            traces[pulse] = list()
+                        
+                        traces[pulse].append(trace)
+                        # axs[pulse-1].plot(x, trace, 'lightgray', alpha=0.5)
+
+            else:
+                if normalize_by_first:
+                    baseline = 0
+
+                for i, pulse in enumerate(pulses):
+                    start_frame = pulse - pre_frame_num  # when the neuron traces will start
+                    stop_frame = pulse + post_frame_num  # when the neuron traces will end
+
+                    trace = neuron[key][start_frame:stop_frame+1]
+
+                    if normalize:
+                        baseline = np.mean(neuron[key][start_frame:pulse])
+                    elif normalize_by_first and i == 0:
+                        baseline = np.mean(neuron[key][start_frame:pulse])
+
+                    trace = trace - baseline
+
+                    if i+1 not in traces:
+                        traces[i+1] = list()
+                    
+                    traces[i+1].append(trace)
+                    # axs[i].plot(x, trace, 'lightgray', alpha=0.5)
+
+        for pulse in sorted(traces.keys()):
+            # avg_trace = np.array(traces[pulse]).mean(axis=0)
+            avg_trace = np.median(traces[pulse], axis=0)
+            # sems = sem(np.array(traces[pulse]), axis=0)
+            sems = t.interval(0.95, len(np.array(traces[pulse]))-1, loc=np.median(traces[pulse], axis=0))
+
+            plt.plot (x, avg_trace, zorder=102, label=pulse)
+            plt.fill_between(x, avg_trace-sems, avg_trace+sems, alpha=0.2, zorder=101)
+        
+        plt.axvspan(-1, 0, color='red', lw=2, alpha=0.2, ec=None, zorder=100)
+        plt.legend()
+
+        if normalize or normalize_by_first:
+            plt.ylim(top=1, bottom=-0.50)
+        else:
+            plt.ylim(top=1, bottom=0)
+            
+        plt.title(" - ".join([str(cond) for cond in conditions]), fontsize=18)
+
+        if savefig and not only_responsive:
+            plt.savefig(save_path.joinpath("overlayed_pulses_by_" + "_".join([str(cond) for cond in conditions]) + "_all.pdf"), transparent=True)
+        elif savefig and only_responsive:
+            plt.savefig(save_path.joinpath("overlayed_pulses_by_" + "_".join([str(cond) for cond in conditions]) + ".pdf"), transparent=True)
