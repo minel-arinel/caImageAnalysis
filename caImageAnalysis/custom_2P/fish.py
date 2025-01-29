@@ -48,7 +48,7 @@ class Fish:
                 parsed.pop(i)
 
         for i, item in enumerate(parsed):
-            if 'mM' in item or 'uM' in item:
+            if ('mM' in item) or ('uM' in item) or ('ugml' in item):
                 self.concentration = item
                 self.stimulus = parsed[i-1]
                 parsed.pop(i)
@@ -152,10 +152,15 @@ class Fish:
         
         return cropped
 
-    def rotate_image(self, img_path, angle=0):
+    def rotate_image(self, img_path, angle=0, prefix=''):
         '''Rotates image by angle'''
         image = imread(img_path)
-        img_path = img_path.parent.joinpath("raw_rotated.tif")
+
+        if len(prefix) > 0:
+            img_path = img_path.parent.joinpath(f"{prefix}_raw_rotated.tif")
+        else:
+            img_path = img_path.parent.joinpath("raw_rotated.tif")
+            
         rotated_image = rotate_image(image, path=img_path, angle=angle)
         
         self.data_paths['rotated'] = img_path

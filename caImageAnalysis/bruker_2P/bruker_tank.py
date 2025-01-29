@@ -1,9 +1,10 @@
 import numpy as np
 import os
+import pandas as pd
 from pathlib import Path
 
 from caImageAnalysis import BrukerFish
-from caImageAnalysis.temporal import *
+from caImageAnalysis.temporal_new import *
 
 class BrukerTank():
     def __init__(self, folder_path, fish_ids, prefix='elavl3H2BGCaMP', load_fish=False, region=''):
@@ -31,6 +32,13 @@ class BrukerTank():
                 elif entry.name == 'unrolled_temporal.h5':
                     self.data_paths['unrolled_temporal'] = Path(entry.path)
                     self.unrolled_df = pd.read_hdf(entry.path)
+                elif entry.name == 'monotonic_temporal.h5':
+                    self.data_paths['monotonic_temporal'] = Path(entry.path)
+                    self.monotonic_df = pd.read_hdf(entry.path)
+
+            if 'figures' not in self.data_paths:
+                os.mkdir(self.folder_path.joinpath("figures"))
+                self.data_paths['figures'] = self.folder_path.joinpath("figures")
     
     def load_fish(self):
         '''Finds the folders of the  given fish and loads them'''
@@ -48,24 +56,21 @@ class BrukerTank():
 
         self.fps = np.mean([fish.fps for fish in self.fish])
                         
-    def save_tank_temporal(self, overwrite=False, window=None, percentile=75):
+    def save_tank_temporal(self, overwrite=False):
         '''Saves the temporal components of final ROIs from all fish as a temporal.h5 file
         Also calculates the dF/F0 and adds it to the dataframe
         
-        overwrite: if True, will recalculate and save each fish's temporal.h5
-        window: if an integer, calculates baseline as the first n frames
-        percentile: the nth percentile for normalization'''
+        overwrite: if True, will recalculate and save each fish's temporal.h5'''
         if len(self.fish) == 0:
             self.load_fish()
         
         tank_temporal_df = list()
 
         for fish in self.fish:
-            if overwrite or 'temporal' not in self.data_paths:
-                save_temporal(fish)
-                compute_median_dff(fish, window=window)
-                normalize_dff(fish)
-                df = normalize_temporaldf(fish)
+            if overwrite or 'temporal' not in fish.data_paths:
+                fish.save_temporal()
+                fish.normalize_temporaldf()
+                df = fish.add_coms_to_temporaldf()
 
                 print(f'saved {fish.exp_path.name}')
                 
@@ -74,14 +79,29 @@ class BrukerTank():
 
             df['fish'] = fish.fish_id
             df['age'] = int(fish.age)
-            df['stimulus'] = fish.stimulus
-            df['concentration'] = float(fish.concentration[:-2])
-            df['region'] = fish.data_paths['raw'].name[:fish.data_paths['raw'].name.rfind('-')]
+            try:
+                df['stimulus'] = str(fish.stimulus)
+            except AttributeError:
+                # if we don't give any stimuli
+                df['stimulus'] = None
+            
+            try:
+                # for mM or uM
+                df['concentration'] = float(fish.concentration[:-2])
+            except ValueError:
+                # for ugml
+                df['concentration'] = float(fish.concentration[:-4])
+            except AttributeError:
+                # if we don't give any stimuli
+                df["concentration"] = None
+            
+            df['region'] = str(fish.data_paths['raw'].name[:fish.data_paths['raw'].name.rfind('-')])
 
             tank_temporal_df.append(df)
 
         self.temporal_df = pd.concat(tank_temporal_df).reset_index().drop(columns='index')
         self.temporal_df.to_hdf(self.folder_path.joinpath('temporal.h5'), key='temporal')
+        print('saved tank temporal_df')
 
         return self.temporal_df
     
@@ -105,8 +125,7 @@ class BrukerTank():
                     compute_median_dff(fish, window=window)
                     normalize_dff(fish)
                     normalize_temporaldf(fish)
-                    zscore_temporaldf(fish)
-                    df = percentile_norm_temporaldf(fish, percentile=percentile)
+                    df = add_coms_to_temporaldf(fish)
 
                     print(f'saved {fish.exp_path.name}')
 
@@ -125,7 +144,7 @@ class BrukerTank():
 
         return self.temporal_df
     
-    def plot_individual_fish_heatmaps(self, sort=True, savefig=True):
+    def plot_individual_fish_heatmaps(self, sort=True, savefig=True, tick_interval=60):
         '''Plots heatmaps of individual fish'''
         if savefig:
             save_path = self.data_paths['figures'].joinpath("individual_fish_heatmaps")
@@ -144,8 +163,13 @@ class BrukerTank():
             else:
                 data = np.vstack(traces)
 
-            plot_heatmap(data)
-            plt.title(f"Fish {fish} - {fish_df.iloc[0, 17]} - {fish_df.iloc[0, 19]}")
+            if len(fish_df.pulse_frames.iloc[0]) == 1:
+                pulses = fish_df.pulse_frames.iloc[0]
+                plot_heatmap(data, fps=self.fps, pulses=pulses, tick_interval=tick_interval)
+            else:
+                plot_heatmap(data, fps=self.fps, tick_interval=tick_interval)
+
+            plt.title(f"Fish {fish} - {fish_df.iloc[0, 13]} - {fish_df.iloc[0, 15]}")
 
             if savefig:
                 plt.savefig(save_path.joinpath(f"heatmap_fish{fish}.pdf"), transparent=True)
@@ -196,8 +220,13 @@ class BrukerTank():
             df = unroll_temporal_df(fish, **kwargs)
 
             df['age'] = int(fish.age)
-            df['stimulus'] = fish.stimulus
-            df['concentration'] = float(fish.concentration[:-2])
+            try:
+                df['stimulus'] = fish.stimulus
+                df['concentration'] = float(fish.concentration[:-2])
+            except AttributeError:
+                # if we're not giving any stimuli
+                df["stimulus"] = None
+                df["concentration"] = None
             df['region'] = fish.data_paths['raw'].name[:fish.data_paths['raw'].name.rfind('-')]
 
             dfs.append(df)
@@ -209,7 +238,7 @@ class BrukerTank():
 
         return self.unrolled_df
     
-    def hierarchical_clustering(self, max_inter_cluster_dist, filterby=None, key='raw_norm_temporal', savefig=False, save_path=None):
+    def hierarchical_clustering(self, df, max_inter_cluster_dist, filterby=None, key='raw_norm_temporal', sorted=False, savefig=False, save_path=None):
         '''Hierarchically clusters the temporal responses of all neurons
         filterby: runs separate clustering based on the filters
         colorby: colors each point based on the filter'''
@@ -221,9 +250,9 @@ class BrukerTank():
         
         if filterby is not None:
             for filter in filterby:
-                if filter not in self.unrolled_df.columns:
+                if filter not in df.columns:
                     raise ValueError("Given filter is not a column in the unrolled_df")
-            filter_groups = self.unrolled_df.groupby(filterby).size().reset_index()
+            filter_groups = df.groupby(filterby).size().reset_index()
 
             if len(max_inter_cluster_dist) != len(filter_groups):
                 raise ValueError(f"The length of max_inter_cluster_dist should match the length of the total filter groups, which is {len(filter_groups)}.")
@@ -234,30 +263,37 @@ class BrukerTank():
                 filters = list()
                 for col, cond in zip(filterby, conditions):
                     if isinstance(cond, str):
-                        filters.append(f"(self.unrolled_df['{col}'] == '{cond}')")
+                        filters.append(f"(df['{col}'] == '{cond}')")
                     else:
-                        filters.append(f"(self.unrolled_df['{col}'] == {cond})")
+                        filters.append(f"(df['{col}'] == {cond})")
 
-                subdf = self.unrolled_df[eval(" & ".join(filters))]
+                subdf = df[eval(" & ".join(filters))]
                 traces = np.array(subdf.loc[:, key])
                 traces = np.array([np.array(trace) for trace in traces])
                         
                 clusters, _ = hierarchical_clustering(traces, max_inter_cluster_dist[i])
+                print("got the clusters")
 
                 peak_clusters = dict()
                 peak_indices = list()
 
                 for cl in clusters:
+                    # if sorted:
                     sorted_ts = sort_by_peak(clusters[cl])
                     peak_clusters[cl] = sorted_ts
+                    # else:
+                    #     peak_clusters[cl] = clusters[cl]
 
                     # calculate an index that takes a sliding window sum of each trace to find the "peak" time point
                     # this "peak" time point is then added for each trace of the cluster to create a peak_index
                     # the peak_index will be used to sort the clusters
-                    peak_index = np.array([np.argmax(np.convolve(arr, np.ones(10), 'valid')) for arr in sorted_ts]).mean()
+                    peak_index = np.array([np.argmax(np.convolve(arr, np.ones(10), 'valid')) for arr in peak_clusters[cl]]).mean()
                     peak_indices.append(peak_index)
+                    print(f"sorted cluster {cl}")
+                print("sorted individual traces per cluster")
 
-                sorted_peak_clusters = sorted(peak_clusters, key=lambda k: peak_indices[k-1])   
+                sorted_peak_clusters = sorted(peak_clusters, key=lambda k: peak_indices[k-1])
+                print("sorted across clusters")   
 
                 sorted_traces = list()
                 for cl in sorted_peak_clusters:
@@ -266,7 +302,7 @@ class BrukerTank():
                 pulses=[391, 548, 704, 861, 1017]
 
                 fig, (ax1, ax2) = plt.subplots(1, 2, sharey=True, width_ratios=[20, 1], height_ratios=[1], figsize=(20, 10))
-                ax1.imshow(sorted_traces, cmap='plasma', interpolation='nearest', aspect='auto')
+                ax1.imshow(sorted_traces, cmap='inferno', interpolation='nearest', aspect='auto')
                 ax1.set_title(" - ".join([str(cond) for cond in conditions]), fontsize=18)
 
                 ticks = np.arange(0, 16*60*self.fps, 60*self.fps)
@@ -302,10 +338,11 @@ class BrukerTank():
                     plt.savefig(save_path.joinpath(f"hierarchical_clustering_{max_inter_cluster_dist[i]}_" + "_".join([str(cond) for cond in conditions]) + ".pdf"), transparent=True)
 
         else:
-            traces = np.array(self.unrolled_df.loc[:, key])
+            traces = np.array(df.loc[:, key])
             traces = np.array([np.array(trace) for trace in traces])
                     
-            clusters, _ = hierarchical_clustering(traces, max_inter_cluster_dist, save_path=save_path)
+            clusters, _ = hierarchical_clustering(traces, max_inter_cluster_dist)
+            print("got the clusters")
 
             peak_clusters = dict()
             peak_indices = list()
@@ -319,8 +356,11 @@ class BrukerTank():
                 # the peak_index will be used to sort the clusters
                 peak_index = np.array([np.argmax(np.convolve(arr, np.ones(10), 'valid')) for arr in sorted_ts]).mean()
                 peak_indices.append(peak_index)
-
-            sorted_peak_clusters = sorted(peak_clusters, key=lambda k: peak_indices[k-1])   
+                print(f"sorted cluster {cl}")
+            print("sorted individual traces per cluster")
+            
+            sorted_peak_clusters = sorted(peak_clusters, key=lambda k: peak_indices[k-1])
+            print("sorted across clusters")  
 
             sorted_traces = list()
             for cl in sorted_peak_clusters:

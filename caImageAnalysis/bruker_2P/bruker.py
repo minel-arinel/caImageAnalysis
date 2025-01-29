@@ -12,14 +12,16 @@ from .bruker_utils import round_microseconds
 from .markpoints import MarkPoints
 from .voltage_output import VoltageOutput
 from caImageAnalysis import Fish
+from caImageAnalysis.mesm import get_plane_number, load_mesmerize, load_rois, uuid_to_plane
 from caImageAnalysis.utils import calculate_fps, load_pickle
 
 
 class BrukerFish(Fish):
-    def __init__(self, folder_path, region='', remove_pulses=None, gavage=False):
+    def __init__(self, folder_path, region='', remove_pulses=None, gavage=False, anatomy=''):
         self.region = region
         self.remove_pulses = remove_pulses
         self.gavage = gavage
+        self.anatomy = anatomy
         super().__init__(folder_path)
         
         self.bruker = True
@@ -53,38 +55,58 @@ class BrukerFish(Fish):
                         self.data_paths['stytra'] = Path(entry.path)
                     elif len(self.region) > 0 and entry.name.startswith(self.region):
                         self.data_paths['raw'] = Path(entry.path)
-                    elif len(self.region) == 0:
+                    elif (len(self.region) == 0 and len(self.anatomy) == 0 and 
+                            not entry.name.startswith('SingleImage-')) or (len(self.region) == 0 and len(self.anatomy) > 0 and 
+                            not entry.name.startswith('SingleImage-') and not entry.name.startswith(self.anatomy)):
                         self.data_paths['raw'] = Path(entry.path)
+                        self.region = entry.name
+                    elif len(self.anatomy) > 0 and entry.name.startswith(self.anatomy):
+                        with os.scandir(entry.path) as subentries:
+                            for subentry in subentries:
+                                if len(self.region) == 0 and subentry.name.endswith('.tif'):
+                                    self.data_paths['anatomy'] = Path(subentry.path)
+                                elif len(self.region) > 0 and subentry.name.endswith('.tif') and subentry.name.startswith(self.region):
+                                    self.data_paths['anatomy'] = Path(subentry.path)
 
-                elif entry.name.endswith('ch2.tif') and not entry.name.startswith('.'):
-                    self.data_paths['raw_image'] = Path(entry.path)
-                elif entry.name == 'raw_rotated.tif':
-                    self.data_paths['rotated'] = Path(entry.path)
-                elif entry.name.endswith('frametimes.h5') and not entry.name.startswith('.'):
-                    self.data_paths['frametimes'] = Path(entry.path)
-                elif entry.name.endswith('frametimes.txt') and not entry.name.startswith('.') and 'frametimes' not in self.data_paths.keys():
-                    self.data_paths['frametimes'] = Path(entry.path)
-                    self.raw_text_frametimes_to_df()
-                elif entry.name == 'opts.pkl':
-                    self.data_paths['opts'] = Path(entry.path)
-                elif entry.name == 'clusters.pkl':
-                    self.data_paths['clusters'] = Path(entry.path)
-                    self.clusters = load_pickle(Path(entry.path))
-                elif entry.name == 'temporal.h5':
-                    self.data_paths['temporal'] = Path(entry.path)
-                    self.temporal_df = pd.read_hdf(self.data_paths['temporal'])
-                elif entry.name == 'unrolled_temporal.h5':
-                    self.data_paths['unrolled_temporal'] = Path(entry.path)
-                    self.unrolled_temporal_df = pd.read_hdf(self.data_paths['unrolled_temporal'])
-                elif entry.name == 'vol_temporal.pkl':
-                    self.data_paths['vol_temporal'] = Path(entry.path)
-                    self.vol_temporal = load_pickle(self.data_paths['vol_temporal'])
-                elif entry.name == 'anatomy.tif':
-                    self.data_paths['anatomy'] = Path(entry.path)
-                elif 'C_frames' in entry.name and not entry.name.startswith('.'):
-                    self.data_paths['C_frames'] = Path(entry.path)
-                elif entry.name == 'analysis_results.hdf5':
-                    self.data_paths['analysis_results'] = Path(entry.path)
+                elif len(self.region) > 0 and entry.name.startswith(self.region):  # if there is a specific region given
+                    if entry.name.endswith('ch2.tif') and not entry.name.startswith('.'):
+                        self.data_paths['raw_image'] = Path(entry.path)
+                    elif entry.name.endswith('frametimes.txt') and not entry.name.startswith('.'):
+                        self.data_paths['frametimes'] = Path(entry.path)
+                        self.raw_text_frametimes_to_df()
+                
+                else:
+                    if entry.name.endswith('.xml'):
+                        self.data_paths['combined_log'] = Path(entry.path)
+                    elif entry.name.endswith('ch2.tif') and not entry.name.startswith('.') and 'raw_image' not in self.data_paths.keys():
+                        self.data_paths['raw_image'] = Path(entry.path)
+                    elif entry.name == 'raw_rotated.tif':
+                        self.data_paths['rotated'] = Path(entry.path)
+                    elif entry.name.endswith('frametimes.h5') and not entry.name.startswith('.'):
+                        self.data_paths['frametimes'] = Path(entry.path)
+                    elif entry.name.endswith('frametimes.txt') and not entry.name.startswith('.') and 'frametimes' not in self.data_paths.keys():
+                        self.data_paths['frametimes'] = Path(entry.path)
+                        self.raw_text_frametimes_to_df()
+                    elif entry.name == 'opts.pkl':
+                        self.data_paths['opts'] = Path(entry.path)
+                    elif entry.name == 'clusters.pkl':
+                        self.data_paths['clusters'] = Path(entry.path)
+                        self.clusters = load_pickle(Path(entry.path))
+                    elif entry.name == 'temporal.h5':
+                        self.data_paths['temporal'] = Path(entry.path)
+                        self.temporal_df = pd.read_hdf(self.data_paths['temporal'])
+                    elif entry.name == 'unrolled_temporal.h5':
+                        self.data_paths['unrolled_temporal'] = Path(entry.path)
+                        self.unrolled_temporal_df = pd.read_hdf(self.data_paths['unrolled_temporal'])
+                    elif entry.name == 'vol_temporal.pkl':
+                        self.data_paths['vol_temporal'] = Path(entry.path)
+                        self.vol_temporal = load_pickle(self.data_paths['vol_temporal'])
+                    elif entry.name == 'anatomy.tif':
+                        self.data_paths['anatomy'] = Path(entry.path)
+                    elif 'C_frames' in entry.name and not entry.name.startswith('.'):
+                        self.data_paths['C_frames'] = Path(entry.path)
+                    elif entry.name == 'analysis_results.hdf5':
+                        self.data_paths['analysis_results'] = Path(entry.path)
                     
         if 'raw' in self.data_paths.keys():
             if 'anatomy' not in self.data_paths.keys():
@@ -123,7 +145,6 @@ class BrukerFish(Fish):
         if 'mesmerize' in self.data_paths.keys():
             self.process_mesmerize_filestructure()
 
-        
         try:
             if self.gavage:
                 if self.volumetric:
@@ -136,7 +157,7 @@ class BrukerFish(Fish):
                         for val in vals:
                             pulses.remove(val)
                     self.align_pulses_to_frametimes(pulses)
-
+            
             elif 'voltage_output' in self.data_paths.keys():
                 self.voltage_output = VoltageOutput(self.data_paths['voltage_output'], self.data_paths['log'])
                 self.frametimes_df = self.voltage_output.align_pulses_to_frametimes(self.frametimes_df)
@@ -172,8 +193,12 @@ class BrukerFish(Fish):
         '''Checks if the experiment is volumetric'''
         volumetric = False
         
-        with open(self.data_paths['log'], 'r') as file:
-            log = file.read()
+        if 'combined_log' in self.data_paths:
+            with open(self.data_paths['combined_log'], 'r') as file:
+                log = file.read()
+        else:
+            with open(self.data_paths['log'], 'r') as file:
+                log = file.read()
 
         Bs_data = BeautifulSoup(log)
 
@@ -183,16 +208,14 @@ class BrukerFish(Fish):
             volumetric = True
             self.volumetric_type = 'ZSeries'
 
-        else:
+        elif first_sequence['type'] == 'TSeries Timed Element':
             # this is for "fake volumetric" image sequences
-            subindexed_value = Bs_data.find_all('subindexedvalue')
+            sequences = Bs_data.find_all('sequence')
             planes = list()
-            for val in subindexed_value:
-                try:
-                    if 'Optotune ETL' in val['description']:
-                        planes.append(val['value'])
-                except:
-                    pass
+            
+            for plane, seq in enumerate(sequences):
+                if seq['type'] == "TSeries Timed Element":
+                    planes.append(plane)
             
             if len(np.unique(planes)) > 1:
                 volumetric = True
@@ -265,12 +288,13 @@ class BrukerFish(Fish):
 
         ch_images = [np.array(tifffile.imread(img_path)) for img_path in ch_image_paths]
         
-        # find out if there is an anatomy stack
-        n_planes = ch_images[0].shape[0]
-        anatomy_index = [i for i, img in enumerate(ch_images) if img.shape[0] != n_planes]
-        if len(anatomy_index) != 0:
-            del ch_images[anatomy_index[0]]
-            self.data_paths['anatomy'] = ch_image_paths[anatomy_index[0]]
+        if len(self.anatomy) == 0:
+            # find out if there is an anatomy stack
+            n_planes = ch_images[0].shape[0]
+            anatomy_index = [i for i, img in enumerate(ch_images) if img.shape[0] != n_planes]
+            if len(anatomy_index) != 0:
+                del ch_images[anatomy_index[0]]
+                self.data_paths['anatomy'] = ch_image_paths[anatomy_index[0]]
 
         raw_img = np.concatenate(ch_images)
         
@@ -284,7 +308,7 @@ class BrukerFish(Fish):
 
         plt.imshow(raw_img[0])
 
-    def split_bruker_volumes(self, channel):
+    def split_bruker_volumes(self, channel, overwrite=True):
         '''Splits volumes to individual planes'''
         channels = ['Ch1', 'Ch2']
         if channel not in channels:
@@ -297,9 +321,9 @@ class BrukerFish(Fish):
                 ch_image_paths.append(Path(entry.path))
 
         if 'rotated' in self.data_paths.keys():
-            img = tifffile.imread(self.data_paths['rotated'])
+            img = tifffile.memmap(self.data_paths['rotated'])
         else:
-            img = tifffile.imread(self.data_paths['raw_image'])
+            img = tifffile.memmap(self.data_paths['raw_image'])
 
         if self.volumetric_type == 'ZSeries':
             n_planes = tifffile.imread(ch_image_paths[0]).shape[0]
@@ -318,37 +342,44 @@ class BrukerFish(Fish):
             elif self.volumetric_type.startswith('fake_volumetric'):
                 plane_img = img[plane*len_plane:(plane+1)*len_plane]
                 plane_frametimes = self.frametimes_df[plane*len_plane:(plane+1)*len_plane].copy()
-            
-            tifffile.imsave(os.path.join(plane_folder_path, 'image.tif'), plane_img, bigtiff=True)
 
-            plane_frametimes = plane_frametimes.reset_index(drop=True)
-            plane_frametimes.to_hdf(os.path.join(plane_folder_path, 'frametimes.h5'), 'frametimes')
-        
+            if overwrite:
+                tifffile.imsave(os.path.join(plane_folder_path, 'image.tif'), plane_img, bigtiff=True)
+
+                plane_frametimes = plane_frametimes.reset_index(drop=True)
+                plane_frametimes.to_hdf(os.path.join(plane_folder_path, 'frametimes.h5'), 'frametimes')
+            else:
+                try:
+                    prev_plane_img = tifffile.memmap(os.path.join(plane_folder_path, 'image.tif'))
+                    new_img = np.concatenate(prev_plane_img, plane_img)
+                    tifffile.imsave(os.path.join(plane_folder_path, 'image.tif'), new_img, bigtiff=True)
+
+                    prev_plane_fts = pd.read_hdf(os.path.join(plane_folder_path, 'frametimes.h5'))
+                    new_fts = pd.concat(prev_plane_fts, plane_frametimes)
+                    new_fts = new_fts.reset_index(drop=True)
+                    new_fts.to_hdf(os.path.join(plane_folder_path, 'frametimes.h5'), 'frametimes')
+                except FileNotFoundError:
+                    # if an image.tif doesn't exist yet
+                    tifffile.imsave(os.path.join(plane_folder_path, 'image.tif'), plane_img, bigtiff=True)
+
+                    plane_frametimes = plane_frametimes.reset_index(drop=True)
+                    plane_frametimes.to_hdf(os.path.join(plane_folder_path, 'frametimes.h5'), 'frametimes')
+
         self.process_bruker_filestructure()
 
     def get_pulse_frames(self):
         '''Gets frame indices for each pulse (for bruker recordings)
-        Picks the smallest frame across planes'''
+        Picks the most common frame across all planes'''
         if not hasattr(self, 'temporal_df'):
             raise AttributeError('Requires a temporal_df: Run temporal.py/save_temporal')
         
-        min_pulse_frames = list()
-        
-        if hasattr(self, 'voltage_output'):
-            for i in range(self.voltage_output.n_pulses):
-                # min_pulse_frames.append(np.min([pulses[i] for pulses in self.temporal_df.pulse_frames]))
-                min_pulse_frames.append(np.argmax(np.bincount([pulses[i] for pulses in self.temporal_df.pulse_frames])))
-        
-        # elif hasattr(self, 'markpoints'):
-        #     pass
-        #     mp = list(self.markpoints.values())[0]
-        #     for i in range(mp.n_pulses):
-        #         min_pulse_frames.append()
+        pulse_frames = list()
 
-        else:
-            raise AttributeError('Requires a VoltageOutput or a MarkPoints')
+        n_pulses = len(self.temporal_df.pulse_frames[0])
+        for i in range(n_pulses):
+            pulse_frames.append(np.argmax(np.bincount([pulses[i] for pulses in self.temporal_df.pulse_frames])))
 
-        return min_pulse_frames
+        return pulse_frames
     
     def get_zoom(self):
         '''Extracts the zoom info from log'''
@@ -403,3 +434,152 @@ class BrukerFish(Fish):
             start_frames.remove(0)
 
         self.align_pulses_to_frametimes(start_frames)
+
+    def combine_regions(self, regions, remove_region_files=False, file_prefix=''):
+        '''If a single imaging session consists of multiple "region"s, combine the combined tif files and the frametimes txts here.
+        remove_region_files: if True, it will delete the separate region files to save space
+        file_prefix: the prefix for the names of the combined files'''
+        if not isinstance(regions, list):
+            raise TypeError('regions needs to be a list of folder names, aka regions')
+
+        img_paths = list()
+        frametimes_paths = list()
+
+        for region in regions:
+            for entry in os.listdir(self.exp_path):
+                if entry.startswith(region) and entry.endswith('_ch2.tif'):
+                    img_paths.append(self.exp_path.joinpath(entry))
+                elif entry.startswith(region) and entry.endswith('_frametimes.txt'):
+                    frametimes_paths.append(self.exp_path.joinpath(entry))
+
+        imgs = [tifffile.memmap(img_path) for img_path in img_paths]
+        img = np.concatenate(imgs)
+
+        if remove_region_files:
+            for img_path in img_paths:
+                os.remove(img_path)
+
+        tifffile.imsave(self.exp_path.joinpath(f'{file_prefix}_ch2.tif'), img, bigtiff=True)
+
+        with open(self.exp_path.joinpath(f'{file_prefix}_frametimes.txt'), 'w') as outfile:
+            for ft_path in frametimes_paths:
+                with open(ft_path) as infile:
+                    for line in infile:
+                        outfile.write(line)
+
+        if remove_region_files:
+            for ft_path in frametimes_paths:
+                os.remove(ft_path)
+
+        self.process_bruker_filestructure()
+
+
+    def save_temporal(self):
+        '''Saves the temporal components of final ROIs as a temporal.h5 file
+        Also calculates the dF/F0 and adds it to the dataframe'''
+        mes_df = uuid_to_plane(load_mesmerize(self))
+        final_rois = load_rois(self)
+
+        planes = list()
+        raw_temporal = list()
+        temporal = list()
+        roi_indices = list()
+        pulse_frames = list()
+
+        for i, row in mes_df.iterrows():
+            if row.algo == 'cnmf':
+
+                try:
+                    plane = get_plane_number(row)
+
+                    name = row['item_name']
+                    if name not in final_rois.keys():
+                        continue
+
+                    indices = final_rois[name]
+
+                    raw_temp = row.cnmf.get_temporal("good", add_residuals=True)  # raw temporal responses: C+YrA
+                    raw_temporal.append(raw_temp[indices])
+
+                    planes.append(int(plane))
+                    roi_indices.append(indices)
+
+                    temp = row.cnmf.get_temporal('good')  # denoised temporal responses: C
+                    temporal.append(temp[indices])
+
+                    fts = pd.read_hdf(self.data_paths['volumes'][plane]['frametimes'])
+                    try:
+                        pulses = [fts[fts.pulse == pulse].index.values[0] for pulse in fts.pulse.unique() if pulse != fts.loc[0, 'pulse']]
+                    except:
+                        pulses = [0]
+
+                    if 'DOI' in str(self.data_paths['raw']) and pulses == [0]:
+                        with os.scandir(self.exp_path) as entries:
+                            for entry in entries:
+                                if '_pre' in entry.name:
+                                    pre_path = Path(entry.path)
+
+                        pulses = [len([file for file in os.listdir(pre_path) if file.endswith('.ome.tif')])]
+
+                    pulse_frames.append(pulses)
+
+                    print(f'finished plane {plane}')
+                
+                except ValueError:
+                    # if none of the cells made it
+                    pass
+
+        temporal_df = pd.DataFrame({'plane': planes,
+                                    'raw_temporal': raw_temporal,
+                                    'temporal': temporal,
+                                    'roi_indices': roi_indices,
+                                    'pulse_frames': pulse_frames})
+        temporal_df.sort_values(by=['plane'], ignore_index=True, inplace=True)
+        temporal_df.to_hdf(self.exp_path.joinpath('temporal.h5'), key='temporal')
+
+        self.process_bruker_filestructure()
+
+
+    def normalize_temporaldf(self):
+        '''Normalizes both the raw and denoised traces between 0 and 1'''
+        self.temporal_df['norm_temporal'] = None
+        self.temporal_df['raw_norm_temporal'] = None
+
+        for i, row in self.temporal_df.iterrows():
+            norm_temporals = list()
+            raw_norm_temporals = list()
+
+            for comp in row.temporal:
+                norm_temporal = (comp - min(comp)) / (max(comp) - min(comp))
+                norm_temporals.append(norm_temporal)
+
+            for comp in row.raw_temporal:
+                raw_norm_temporal = (comp - min(comp)) / (max(comp) - min(comp))
+                raw_norm_temporals.append(raw_norm_temporal)
+
+            self.temporal_df['norm_temporal'][i] = norm_temporals
+            self.temporal_df['raw_norm_temporal'][i] = raw_norm_temporals
+
+        self.temporal_df.to_hdf(self.exp_path.joinpath('temporal.h5'), key='temporal')
+
+        return self.temporal_df
+    
+
+    def add_coms_to_temporaldf(self):
+        '''Adds a column for centers of mass for each "good" neuron'''
+        self.temporal_df["coms"] = None
+
+        mes_df = uuid_to_plane(load_mesmerize(self))
+        for i, row in self.temporal_df.iterrows():
+            plane = f'img_stack_{row.plane}'
+            mes_row = mes_df[(mes_df.algo == 'cnmf') & (mes_df.item_name == plane)].iloc[0]
+
+            _, coms = mes_row.cnmf.get_contours('good', swap_dim=False)  
+            coms = np.array(coms)
+            coms = coms[row.roi_indices]  # get the accepted components
+            
+            self.temporal_df["coms"][i] = coms
+
+        self.temporal_df.to_hdf(self.exp_path.joinpath('temporal.h5'), key='temporal')
+
+        return self.temporal_df
