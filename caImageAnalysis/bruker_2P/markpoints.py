@@ -159,13 +159,21 @@ class MarkPoints:
                 y, x = self.get_pulse_train()
 
             else:
-                delay_y = np.repeat(0, self.iteration_delay)
-                delay_x = np.arange(x[-1] + 1, x[-1] + 1 + self.iteration_delay)
+                if self.iteration_delay != 0:
+                    delay_y = np.repeat(0, self.iteration_delay)
+                    delay_x = np.arange(x[-1] + 1, x[-1] + 1 + self.iteration_delay)
 
-                train_y, train_x = self.get_pulse_train()
-                train_x = train_x + delay_x[-1] + 1
-                y = np.concatenate((y, delay_y, train_y))
-                x = np.concatenate((x, delay_x, train_x))
+                    train_y, train_x = self.get_pulse_train()
+                    train_x = train_x + delay_x[-1] + 1
+
+                    y = np.concatenate((y, delay_y, train_y))
+                    x = np.concatenate((x, delay_x, train_x))
+
+                else:
+                    # if there are no iteration delays
+                    train_y, train_x = self.get_pulse_train()
+                    y = np.concatenate((y, train_y))
+                    x = np.concatenate((x, train_x))
 
         if plot:
             plt.figure(figsize=(20, 5))
