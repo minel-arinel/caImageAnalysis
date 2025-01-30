@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.stats import gaussian_kde, sem
+from scipy.ndimage import gaussian_filter1d
+from scipy.stats import sem
 
 from caImageAnalysis.temporal_new import get_traces
 from caImageAnalysis.utils import sort_by_peak, sort_by_peak_with_indices
@@ -30,7 +31,7 @@ def plot_heatmap(data, sort=True, fps=1.3039181000348583, pulses=[391, 548, 704,
     plt.grid(visible=False)
 
 
-def plot_grouped_heatmaps(df, filterby, sort=True, key='norm_temporal', savefig=False, 
+def plot_grouped_heatmaps(df, filterby, sort=True, key='norm_temporal',
                           save_path=None, colors=None, **kwargs):
     """
     Plots grouped heatmaps based on specified filters.
@@ -39,18 +40,14 @@ def plot_grouped_heatmaps(df, filterby, sort=True, key='norm_temporal', savefig=
         filterby (list): List of column names to filter the DataFrame by.
         sort (bool, optional): If True, sorts the heatmap by peak values. Default is True.
         key (str, optional): Column name containing the data to be plotted in the heatmap. Default is 'norm_temporal'.
-        savefig (bool, optional): If True, saves the figure to the specified path. Default is False.
         save_path (Path, optional): Path to save the figure if savefig is True. Default is None.
         colors (list, optional): List of colors for the heatmap. Default is None.
         **kwargs: Additional keyword arguments for the heatmap plotting functions.
     Raises:
-        ValueError: If savefig is True and save_path is None, or if any filter is not a column in the DataFrame.
+        ValueError: If any filter is not a column in the DataFrame.
     Returns:
         None
     """
-    if savefig and save_path is None:
-        raise ValueError("Enter a save_path to save the figure")
-
     for filter in filterby:
         if filter not in df.columns:
             raise ValueError("Given filter is not a column in the temporal_df")
@@ -76,7 +73,7 @@ def plot_grouped_heatmaps(df, filterby, sort=True, key='norm_temporal', savefig=
         else:
             plot_heatmap_with_colorbar(np.vstack(traces), colors, sort=sort, **kwargs)
 
-        if savefig:
+        if save_path:
             plt.savefig(save_path.joinpath("heatmap_" + "_".join([str(cond) for cond in conditions]) + ".pdf"), transparent=True)
 
 
@@ -195,7 +192,7 @@ def plot_random_neurons(df, n_neurons, key="raw_norm_temporal", fps=1.3039181000
         plt.show()
 
 
-def plot_neuron_traces(df, neuron_ids=None, key="raw_norm_temporal", fps=1.3039181000348583, save_path=None):
+def plot_neuron_traces(df, neuron_ids=None, key="raw_norm_temporal", fps=1.3039181000348583, save_path=None, sigma=0, file_name=None):
     """
     Plots neuron activity traces with stimulus pulse markers.
     Parameters:
@@ -204,9 +201,12 @@ def plot_neuron_traces(df, neuron_ids=None, key="raw_norm_temporal", fps=1.30391
         key (str, optional): Column name for neuron traces. Default is "raw_norm_temporal".
         fps (float, optional): Frames per second for time axis. Default is 1.3039181000348583.
         save_path (Path, optional): Path to save the plot as a PDF. Default is None.
+        sigma (float, optional): Standard deviation for Gaussian kernel. If non-zero, smooths the traces. Default is 0.
+        file_name (str, optional): Custom file name for saving the plot. Default is None.
     Returns:
         None
     """
+
     traces = list()
     pulse_frames = list()
 
@@ -224,10 +224,14 @@ def plot_neuron_traces(df, neuron_ids=None, key="raw_norm_temporal", fps=1.30391
         fig, axes = plt.subplots(len(neuron_ids), 1, figsize=(10, len(neuron_ids)))
 
     for i, val in enumerate(neuron_ids):
+        trace = np.array(traces)[val]
+        if sigma > 0:
+            trace = gaussian_filter1d(trace, sigma=sigma)
+
         for pulse in np.array(pulse_frames)[val]:
             axes[i].vlines(pulse, 0, 1, color='#e11f25')
 
-        axes[i].plot(np.array(traces)[val], color='#000000')
+        axes[i].plot(trace, color='#000000')
 
         axes[i].spines['top'].set_visible(False)
         axes[i].spines['right'].set_visible(False)
@@ -250,7 +254,9 @@ def plot_neuron_traces(df, neuron_ids=None, key="raw_norm_temporal", fps=1.30391
             axes[i].set_xlabel("Time (s)")
 
     if save_path:
-        plt.savefig(save_path.joinpath(f"neuron_traces_{'_'.join(map(str, neuron_ids))}.pdf"))
+        if file_name is None:
+            file_name = f"neuron_traces_{'_'.join(map(str, neuron_ids))}.pdf"
+        plt.savefig(save_path.joinpath(file_name))
     plt.show()
 
 
