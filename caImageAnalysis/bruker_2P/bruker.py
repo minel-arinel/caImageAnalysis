@@ -97,7 +97,7 @@ class BrukerFish(Fish):
                         self.temporal_df = pd.read_hdf(self.data_paths['temporal'])
                     elif entry.name == 'unrolled_temporal.h5':
                         self.data_paths['unrolled_temporal'] = Path(entry.path)
-                        self.unrolled_temporal_df = pd.read_hdf(self.data_paths['unrolled_temporal'])
+                        self.unrolled_df = pd.read_hdf(self.data_paths['unrolled_temporal'])
                     elif entry.name == 'vol_temporal.pkl':
                         self.data_paths['vol_temporal'] = Path(entry.path)
                         self.vol_temporal = load_pickle(self.data_paths['vol_temporal'])

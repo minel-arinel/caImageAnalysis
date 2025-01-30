@@ -210,14 +210,17 @@ class BrukerTank():
             if savefig:
                 plt.savefig(save_path.joinpath("heatmap_" + "_".join([cond for cond in conditions]) + ".pdf"), transparent=True)
 
-    def unroll_temporal_df(self, **kwargs):
+    def unroll_temporal_df(self, overwrite=False, **kwargs):
         '''Unrolls the temporal_df of the tank'''
         if len(self.fish) == 0:
             self.load_fish()
 
         dfs = list()
         for fish in self.fish:
-            df = unroll_temporal_df(fish, **kwargs)
+            if overwrite or 'unrolled_temporal' not in fish.data_paths:
+                df = unroll_temporal_df(fish, **kwargs)
+            else:
+                df = fish.unrolled_df
 
             df['age'] = int(fish.age)
             try:
