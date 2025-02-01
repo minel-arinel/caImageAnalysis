@@ -4,3 +4,6 @@ caImageAnalysis.egg-info/
 .idea/
 build/
 .DS_Store
+caImageAnalysis/__pycache__/
+caImageAnalysis/bruker_2P/__pycache__/
+caImageAnalysis/custom_2P/__pycache__/
