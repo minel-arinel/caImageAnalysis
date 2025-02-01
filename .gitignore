@@ -7,3 +7,12 @@ build/
 caImageAnalysis/__pycache__/
 caImageAnalysis/bruker_2P/__pycache__/
 caImageAnalysis/custom_2P/__pycache__/
+caImageAnalysis/__pycache__/__init__.cpython-310.pyc
+caImageAnalysis/__pycache__/caiman_process.cpython-310.pyc
+caImageAnalysis/__pycache__/mesm.cpython-310.pyc
+caImageAnalysis/__pycache__/utils.cpython-310.pyc
+caImageAnalysis/__pycache__/visualize.cpython-310.pyc
+caImageAnalysis/bruker_2P/__pycache__/__init__.cpython-310.pyc
+caImageAnalysis/bruker_2P/__pycache__/bruker.cpython-310.pyc
+caImageAnalysis/custom_2P/__pycache__/fish.cpython-310.pyc
+caImageAnalysis/custom_2P/__pycache__/volume_fish.cpython-310.pyc
