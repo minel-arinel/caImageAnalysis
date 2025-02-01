@@ -177,7 +177,7 @@ def plot_random_neurons(df, n_neurons, key="raw_norm_temporal", fps=1.3039181000
         for pulse in pulse_frames[i]:
             axes.vlines(pulse, 0, 1, color='r')
 
-        axes.plot(t, color='tab:blue')
+        axes.plot(t, color='black')
         axes.set_title(f"neuron {selected_neurons.index[i]}")
         
         axes.spines['top'].set_visible(False)
