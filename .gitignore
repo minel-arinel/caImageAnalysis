@@ -1,0 +1,6 @@
+*.pyc
+__pycache__/
+caImageAnalysis.egg-info/
+.idea/
+build/
+.DS_Store
