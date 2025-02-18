@@ -1,5 +1,6 @@
 import numpy as np
-from scipy.stats import fligner, normaltest, pearsonr, shapiro, spearmanr
+from scipy.stats import boxcox, fligner, ks_2samp, normaltest, pearsonr, shapiro, spearmanr
+from sklearn.preprocessing import PowerTransformer
 
 
 global alpha # Significance level for hypothesis tests
@@ -244,3 +245,85 @@ def check_monotonicity_repeated_measures(df, return_results=False):
 
     if return_results:
         return correlations, p_values
+
+
+def boxcox_transformation(data):
+    """
+    Apply the Box-Cox transformation to the data.
+    Parameters:
+        data (array-like): Data to be transformed.
+    Returns:
+        array-like
+            Transformed data.
+    """
+    return boxcox(data)[0]
+
+
+def yeo_johnson_transformation(data):
+    """
+    Apply the Yeo-Johnson transformation to the data.
+    Parameters:
+        data (array-like): Data to be transformed.
+    Returns:
+        array-like
+            Transformed data.
+    """
+    transformer = PowerTransformer(method='yeo-johnson')
+    return transformer.fit_transform(data.reshape(-1, 1))
+
+
+def transform_to_parametric(*data, force_boxcox=False, shift=0.0001):
+    """
+    Apply the Box-Cox or Yeo-Johnson transformation to the data to make it more Gaussian-like.
+    Parameters:
+        *data : array-like
+            One or more arrays to be transformed.
+        force_boxcox : bool, optional
+            If True, forces the use of Box-Cox transformation even if data contains non-positive values.
+        shift : float, optional
+            The value to shift the data by to make all values positive for Box-Cox transformation.
+    Returns:
+        list
+            A list of transformed arrays.
+    """
+    transformed_data = []
+
+    for arr in data:   
+        arr = np.array(arr)
+        if np.any(arr <= 0):
+            if force_boxcox:
+                print("Running Box-Cox transformation with shift")
+                arr = arr + shift
+                transformed_data.append(boxcox_transformation(arr))
+            else:
+                print("Running Yeo-Johnson transformation")
+                transformed_data.append(yeo_johnson_transformation(arr))
+        else:
+            print("Running Box-Cox transformation")
+            transformed_data.append(boxcox_transformation(arr))
+        
+    return transformed_data
+
+
+def kolmogorov_smirnov_test(a, b, verbose=True):
+    """
+    Perform the Kolmogorov-Smirnov test to compare two samples.
+    Parameters:
+        a (array-like): First sample data.
+        b (array-like): Second sample data.
+    Returns:
+        tuple
+            Kolmogorov-Smirnov statistic and p-value.
+    """
+    statistic, p_value = ks_2samp(a, b)
+
+    if verbose:
+        print(f"Kolmogorov-Smirnov Statistic: {statistic:.5f}")
+        print(f"P-value: {p_value:.5f}")
+    
+        if p_value < alpha:
+            print("The distributions are statistically significantly different.")
+        else:
+            print("The distributions are not statistically significantly different.")
+    
+    return statistic, p_value
