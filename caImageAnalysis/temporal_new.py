@@ -10,7 +10,7 @@ from sklearn.metrics import auc
 from caImageAnalysis.statistics import check_monotonicity_repeated_measures
 
 
-def determine_baseline_frame(temporal_df, pre_frame_num=100):
+def determine_baseline_frame(temporal_df, pre_frame_num=100, save_path=None):
     """
     Determine the optimal baseline frame duration using the standard error of the mean (SEM).
     Calculates the SEM for different baseline frame durations and identifies the optimal duration 
@@ -19,6 +19,7 @@ def determine_baseline_frame(temporal_df, pre_frame_num=100):
     Parameters:
         temporal_df (pd.DataFrame): DataFrame with temporal data containing 'pulse_frames' and 'raw_norm_temporal'.
         pre_frame_num (int): Maximum number of frames before injection to consider for baseline duration. Default is 100.
+        save_path (str or Path, optional): Path to save the figure as determine_baseline_frame.pdf. Default is None.
     Returns:
         None
     """
@@ -51,19 +52,23 @@ def determine_baseline_frame(temporal_df, pre_frame_num=100):
         label.set_visible(False)
     plt.xlabel('# of frames before injection')
     plt.ylabel('sem of trace values')
+    
+    if save_path:
+        plt.savefig(save_path.joinpath('determine_baseline_frame.pdf'), transparent=True)
+    
     plt.show()
 
-    print(f"ideal number of frames: {kn.knee}")
+    print(f"Ideal number of frames: {kn.knee}")
 
 
-def determine_peak_frame(temporal_df, sigma=4):
+def determine_peak_frame(temporal_df, sigma=4, save_path=None):
     """
     Determine the optimal number of frames after injection where most peaks occur.
-    Calculates the minimum distance between pulses and uses that to extract traces after each pulse.
     Finds the peak frame for each trace and plots a histogram of these peak frames.
     Parameters:
         temporal_df (pd.DataFrame): DataFrame with temporal data containing 'pulse_frames' and 'raw_norm_temporal'.
         sigma (int): Standard deviation for Gaussian kernel used in smoothing the histogram. Default is 4.
+        save_path (str or Path, optional): Path to save the figure as determine_peak_frame.pdf. Default is None.
     Returns:
         None
     """
@@ -98,10 +103,12 @@ def determine_peak_frame(temporal_df, sigma=4):
     plt.vlines(kn.knee, 0, max(smoothed_hist), linestyles='dashed', label='Plateau Point')
 
     plt.xlabel('Time to peak (frames)')
-    plt.ylabel('Frequency')
+    plt.ylabel('Count')
     plt.title('Histogram of Time to Peak Frames with Smoothed Curve')
     plt.legend()
-    plt.show()
+    
+    if save_path:
+        plt.savefig(save_path.joinpath('determine_peak_frame.pdf'), transparent=True)
 
     print(f"Plateau point: {kn.knee}")
 
@@ -468,6 +475,9 @@ def get_traces(df, pre_frame_num=15, post_frame_num=13, normalize=False,
             return_col_lists = {col: list() for col in return_col}
         else:
             return_col_list = list()
+
+    if isinstance(df, pd.Series):
+        df = df.to_frame().T
 
     for _, neuron in df.iterrows():
         pulses = neuron['pulse_frames']
@@ -1105,7 +1115,7 @@ def get_decays_across_pulses(df, flip_suppressed=True, filterby=None, frame_inte
 
 def label_monotonic_neurons(df, alpha=0.05, save_path=None, **kwargs):
     """
-    Labels neurons in the DataFrame as 'integrating', 'habituating', or 'static' based on their monotonicity.
+    Labels neurons in the DataFrame as 'integrating', 'habituating', or 'monotonic' based on their monotonicity.
     Parameters:
         df (pd.DataFrame): DataFrame containing neuron data with a 'responsive' column.
         alpha (float, optional): Significance level for monotonicity test. Default is 0.05.
@@ -1131,7 +1141,7 @@ def label_monotonic_neurons(df, alpha=0.05, save_path=None, **kwargs):
         elif row["responsive"] == True and i in habituating_neurons:
             df.loc[i, "monotonic"] = "habituating"
         elif row["responsive"] == True:
-            df.loc[i, "monotonic"] = "static"
+            df.loc[i, "monotonic"] = "monotonic"
 
     if save_path:		
         df.to_hdf(save_path.joinpath('unrolled_temporal.h5'), key='unrolled_temporal')
