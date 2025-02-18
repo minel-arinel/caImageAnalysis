@@ -393,3 +393,40 @@ def plot_average_trace_overlayed(df, overlay_filter, filterby=None, color_order=
         if save_path:
             plt.savefig(save_path.joinpath(f"average_trace_by_{overlay_filter}.pdf"), transparent=True)
 
+def plot_pulse_aligned_traces(row, fps=1, draw_lines=[], save_path=None, specific_pulse=None, **kwargs):
+    """
+    Plots traces aligned to pulses from a single row of a DataFrame.
+    Parameters:
+        row (pd.Series): A row from a DataFrame containing neuron data.
+        fps (float): Frames per second for time axis scaling. Default is 1.
+        draw_lines (list): List of y-values to draw horizontal dashed lines. Default is an empty list.
+        save_path (Path, optional): Path to save the plot as a PDF. Default is None.
+        specific_pulse (int, optional): Specific pulse to plot. Default is None.
+        **kwargs: Additional keyword arguments for the get_traces function.
+    Returns:
+        None
+    """
+    x, traces = get_traces(row, specific_pulse=specific_pulse, **kwargs)
+    avg_trace = np.mean(traces, axis=0)
+    sems = sem(traces, axis=0)
+    x = x / fps
+
+    plt.figure(figsize=(5, 5))
+    for trace in traces:
+        plt.plot(x, trace, color='lightgray', alpha=0.5)
+    
+    plt.plot(x, avg_trace, color='black')
+    plt.fill_between(x, avg_trace - sems, avg_trace + sems, color='black', alpha=0.2)
+    plt.axvspan(-1/fps, 0, color='red', alpha=0.5)
+    
+    for line in draw_lines:
+        plt.axhline(y=line, linestyle='--')
+    
+    plt.xlabel('Time (s)')
+    plt.ylabel('Normalized dF/F (pre-inj.)')
+
+    if save_path:
+        if specific_pulse is not None:
+            plt.savefig(save_path.joinpath(f'neuron_{row.name}_pulse_{specific_pulse}_aligned_traces.pdf'), transparent=True)
+        else:
+            plt.savefig(save_path.joinpath(f'neuron_{row.name}_pulse_aligned_traces.pdf'), transparent=True)
