@@ -345,10 +345,27 @@ def visualize_around_frame(fish, frame, plane, **kwargs):
     return iw
 
 
-def visualize_around_frame_multiple(fish, frames, **kwargs):
-    '''Visualizes around given frame numbers on given planes
-    This can be used to confirm pulse injections or twitch events on different planes
-    frames: needs to be a dictionary in the format -> plane: list of frames'''
+def visualize_around_frames(fish, frames, **kwargs):
+    """
+    Visualizes image data around specified frame numbers for given planes.
+    This function is useful for confirming events such as pulse injections 
+    or twitch events across different imaging planes. It retrieves image 
+    data around the specified frames and displays them for visualization.
+    Parameters:
+        fish (object): A BrukerFish object.
+        frames (dict): A dictionary specifying the planes and corresponding 
+            frame numbers to visualize. The format should be:
+            {
+                plane (int or str): [list of frame numbers (int)]
+            }
+        **kwargs: Additional keyword arguments passed to the 
+            `get_image_around_frame` function for customizing the image 
+            retrieval process.
+    Returns:
+        object: An interactive widget or visualization object created by 
+        `visualize_images`, displaying the images around the specified frames 
+        with their corresponding plane and frame labels.
+    """
     imgs = list()
     names = list()
 
