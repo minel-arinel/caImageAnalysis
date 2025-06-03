@@ -421,13 +421,6 @@ def calculate_goodness_of_fit_relative_to_average(data, reconstruction):
 	return gofs
 
 
-
-
-
-
-
-
-
 def plot_top_n_neurons(sorted_components, sorted_data, classified_neurons, classified_neuron_idxs, final_sorting_idx, N_neurons=1, sorted_reconst=None):
 	'''Plots the average of top N neurons for each component.
 	Only the classified neurons are used for the weight sorting.
@@ -722,7 +715,7 @@ def get_clustered_component_percentages(sorted_df, classified_neuron_idxs, order
 	return all_percentages
 
 
-def plot_random_neuron(sorted_data, n=1, sorted_reconst=None):
+def plot_random_neuron(sorted_data, n=1, sorted_reconst=None, pre_frame_num=0):
 	'''Plots traces of n random neurons.
 	n: number of random neurons to plot
 	sorted_reconst: if an array is given, will overlay the reconstructed trace on top of the actual data'''
@@ -738,12 +731,12 @@ def plot_random_neuron(sorted_data, n=1, sorted_reconst=None):
 
 		fig, axs = plt.subplots(1, sorted_data.shape[0], sharex=True, sharey=True, figsize=(10, 2))
 		for p, pulse in enumerate(avg_trace):
-			axs[p].plot(np.arange(-3, 14), pulse)
+			axs[p].plot(np.arange(0-pre_frame_num, sorted_data.shape[2]-pre_frame_num), pulse)
 			axs[p].axhline(0, ls="dashed", color="black")
 			axs[p].axvspan(-1, 0, color="red", alpha=0.2)
 
 			if sorted_reconst is not None:
-				axs[p].plot(np.arange(-3, 14), avg_trace_reconst[p], label="Reconstruction", linestyle="dashed")
+				axs[p].plot(np.arange(0-pre_frame_num, sorted_data.shape[2]-pre_frame_num), avg_trace_reconst[p], label="Reconstruction", linestyle="dashed")
 
 		if sorted_reconst is not None:
 			plt.legend()
@@ -751,7 +744,7 @@ def plot_random_neuron(sorted_data, n=1, sorted_reconst=None):
 		fig.suptitle(f"Neuron {neuron}")
 
 
-def plot_neurons(sorted_data, sorted_reconst=None):
+def plot_neurons(sorted_data, sorted_reconst=None, pre_frame_num=0):
 	'''Plots individual traces of all neurons in sorted_data.
 	sorted_reconst: if an array is given, will overlay the reconstructed trace on top of the actual data'''
 	for neuron in range(sorted_data.shape[1]):
@@ -764,12 +757,12 @@ def plot_neurons(sorted_data, sorted_reconst=None):
 
 		fig, axs = plt.subplots(1, sorted_data.shape[0], sharex=True, sharey=True, figsize=(10, 2))
 		for p, pulse in enumerate(avg_trace):
-			axs[p].plot(np.arange(-3, 14), pulse)
+			axs[p].plot(np.arange(0-pre_frame_num, sorted_data.shape[2]-pre_frame_num), pulse)
 			axs[p].axhline(0, ls="dashed", color="black")
 			axs[p].axvspan(-1, 0, color="red", alpha=0.2)
 
 			if sorted_reconst is not None:
-				axs[p].plot(np.arange(-3, 14), avg_trace_reconst[p], label="Reconstruction", linestyle="dashed")
+				axs[p].plot(np.arange(0-pre_frame_num, sorted_data.shape[2]-pre_frame_num), avg_trace_reconst[p], label="Reconstruction", linestyle="dashed")
 
 		if sorted_reconst is not None:
 			plt.legend()
