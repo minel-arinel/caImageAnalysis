@@ -1,5 +1,6 @@
 import cv2
 from datetime import datetime as dt
+import imageio
 import matplotlib.pyplot as plt
 import matplotlib.cm as colormap
 import numpy as np
@@ -8,6 +9,7 @@ import pandas as pd
 from pathlib import Path
 import pickle
 from scipy.ndimage import rotate
+from scipy.signal import butter, filtfilt, find_peaks
 from tifffile import imread, imwrite
 
 
@@ -261,3 +263,110 @@ def get_last_indices(ordered_array):
 	return last_indices
 
 
+def read_avi_as_numpy(file_path, start_frame=0, end_frame=None, **kwargs):
+    """
+    Reads an AVI video file and converts it to a NumPy array of grayscale frames.
+    Parameters:
+        file_path (str): Path to the AVI video file.
+        start_frame (int, optional): Frame index to start reading from. Defaults to 0.
+        end_frame (int, optional): Frame index to stop reading at. If None, reads until the end. Defaults to None.
+    Returns:
+        tuple: A tuple containing:
+            - meta_data (dict): Metadata of the video file.
+            - frames (np.ndarray): Array of grayscale frames.
+    """
+    reader = imageio.get_reader(file_path, format="ffmpeg", **kwargs)
+    meta_data = reader.get_meta_data()
+    total_frames = meta_data['nframes']
+
+    if end_frame is None or end_frame > total_frames:
+        end_frame = total_frames
+
+    frames = []
+    for i, frame in enumerate(reader):
+        if i < start_frame:
+            continue
+        if i >= end_frame:
+            break
+        
+        # Convert RGB frame to grayscale
+        gray_frame = np.dot(frame[..., :3], [0.2989, 0.5870, 0.1140])
+        frames.append(gray_frame)
+
+    reader.close()
+
+    frames = np.array(frames)
+    frames = frames.astype('float32')  # Convert to float32 to save memory
+
+    return meta_data, frames
+
+
+def calculate_pixel_change(video_data):
+    """
+    Calculate the sum of pixel changes between consecutive frames in a video.
+    Parameters:
+        video_data (numpy.ndarray): A 3D array representing the video frames 
+                                    with shape (num_frames, height, width).
+    Returns:
+        numpy.ndarray: A 1D array containing the sum of pixel changes for each frame.
+    """
+    pixel_change = np.abs(np.diff(video_data, axis=0))
+    pixel_change_sum = np.sum(pixel_change, axis=(1, 2))
+    return pixel_change_sum
+
+
+def remove_artifacts(data, height, **kwargs):
+    """
+    Remove artifacts from the data by replacing peaks above a certain height with the average of surrounding values.
+    Parameters:
+        data (array-like): The input data containing potential artifacts.
+        height (float): The threshold height above which data points are considered artifacts.
+        **kwargs: Additional keyword arguments to pass to the find_peaks function.
+    Returns:
+        array-like: The cleaned data with artifacts removed.
+    """
+    cleaned_data = data.copy()
+    peaks, _ = find_peaks(data, **kwargs)
+    for peak in peaks:
+        start = peak
+        while start > 0 and data[start] > height:
+            start -= 1
+        end = peak
+        while end < len(data) and data[end] > height:
+            end += 1
+
+        # Get the last non-artifact data point before the artifacts
+        if start == 0:
+            before_value = data[start]
+        else:
+            before_value = data[start - 1]
+
+        # Get the first non-artifact data point after the artifacts
+        if end == len(data):
+            after_value = data[end - 1]
+        else:
+            after_value = data[end]
+
+        # Calculate the average value
+        average_value = (before_value + after_value) / 2
+
+        # Replace the artifact data points with the average value
+        cleaned_data[start:end] = average_value
+    
+    return cleaned_data
+
+
+def lowpass_filter(data, cutoff, fps, order=5):
+    """
+    Apply a low-pass Butterworth filter to the input data.
+    Parameters:
+        data (array-like): The input signal to be filtered.
+        cutoff (float): The cutoff frequency of the filter.
+        fps (float): The sampling frequency of the input signal.
+        order (int, optional): The order of the filter. Default is 5.
+    Returns:
+        array-like: The filtered signal.
+    """
+    b, a = butter(order, cutoff, btype='low', analog=False, fs=fps)
+    y = filtfilt(b, a, data)
+    return y
