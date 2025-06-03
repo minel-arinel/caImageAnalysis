@@ -1,5 +1,6 @@
 from kneed import KneeLocator
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 import numpy as np
 import pandas as pd
 import pynndescent
@@ -7,6 +8,7 @@ from scipy.interpolate import interp1d
 from scipy.ndimage import gaussian_filter1d
 from scipy.special import rel_entr
 from scipy.stats import gaussian_kde, sem, wilcoxon
+from sklearn.decomposition import PCA
 from sklearn.metrics import auc
 
 from caImageAnalysis.statistics import spearman_correlation_repeated_measures
@@ -186,25 +188,38 @@ def unroll_temporal_df(fish, min_pulses=3, **kwargs):
 
 
 def find_stimulus_responsive(fish, pre_frame_num=15, post_frame_num=5, peak_threshold=None, min_threshold=None, key=None, normalize=False, 
-                             normalize_by_first=False):
+                             normalize_by_first=False, pulse_key="pulse_frames"):
     """
-    Identifies stimulus responsive neurons in a given fish.
+    Identifies stimulus-responsive neurons in a given fish dataset.
     Parameters:
-        fish (object): Fish object containing temporal data.
-        pre_frame_num (int): Number of frames before the pulse (default is 15).
-        post_frame_num (int): Number of frames after the pulse (default is 5).
-        peak_threshold (float, optional): Minimum normalized fluorescence intensity for an activated neuron.
-        min_threshold (float, optional): Maximum normalized fluorescence intensity for an suppressed neuron.
-        key (str, optional): Key to access neuron data in the dataframe (default is 'raw_norm_temporal').
-        normalize (bool): If True, normalizes using the pre-injection period as baseline.
-        normalize_by_first (bool): If True, normalizes using the pre-injection period of the first pulse as baseline.
+        fish (object): Fish object containing temporal data in a pandas DataFrame.
+        pre_frame_num (int): Number of frames before the pulse to consider as baseline (default is 15).
+        post_frame_num (int): Number of frames after the pulse to analyze (default is 5).
+        peak_threshold (float, optional): Custom threshold for peak fluorescence intensity 
+            to classify a neuron as activated. If None, a default threshold is used.
+        min_threshold (float, optional): Custom threshold for minimum fluorescence intensity 
+            to classify a neuron as suppressed. If None, a default threshold is used.
+        key (str, optional): Key to access neuron data in the DataFrame (default is 'raw_norm_temporal').
+        normalize (bool): If True, normalizes fluorescence intensity using the pre-stimulus 
+            period as baseline for each pulse.
+        normalize_by_first (bool): If True, normalizes fluorescence intensity using the 
+            pre-stimulus period of the first pulse as baseline for all pulses.
+        pulse_key (str): Key to access pulse frame data in the DataFrame (default is 'pulse_frames').
     Returns:
-        tuple: Contains lists of stimulus responsive neurons, activated neurons, suppressed neurons, and pulse responses.
-    Raises:
-        ValueError: If both normalize and normalize_by_first are True.
+        tuple: A tuple containing:
+            - stim_responsive_neurons (list): Indices of neurons classified as stimulus-responsive.
+            - activated_neurons (list): Indices of neurons classified as activated.
+            - suppressed_neurons (list): Indices of neurons classified as suppressed.
+            - pulse_responses (list): List of neuron responses to individual pulses. Each entry 
+                is a list of tuples, where each tuple contains the pulse number and response type 
+                (0 for suppression, 1 for activation).
+    Raises:    
+        ValueError: If both `normalize` and `normalize_by_first` are set to True.
     Notes:
-        - Activated neurons have peak responses greater than 2 times the pre-injection standard deviation.
-        - Suppressed neurons have minimum responses smaller than 2 times the pre-injection standard deviation.
+        - A neuron is classified as activated if its peak response in the post-stimulus period 
+            exceeds 2 times the standard deviation of the pre-stimulus period.
+        - A neuron is classified as suppressed if its minimum response in the post-stimulus 
+            period is below 2 times the standard deviation of the pre-stimulus period.
     """
     if key is None:
         key = 'raw_norm_temporal'
@@ -219,7 +234,7 @@ def find_stimulus_responsive(fish, pre_frame_num=15, post_frame_num=5, peak_thre
         neurons.extend(row[key])
 
         for j in range(len(row[key])):  # add pulse frames for each neuron in each plane
-            pulse_frames.append(row['pulse_frames'])
+            pulse_frames.append(row[pulse_key])
 
     stim_responsive_neurons = list()  # list of neuron indices that are selected to be stimulus responsive
     activated_neurons = list()  # list of neuron indices that are activated to the injection on average
@@ -243,8 +258,11 @@ def find_stimulus_responsive(fish, pre_frame_num=15, post_frame_num=5, peak_thre
                 trace = (trace - baseline)/baseline
 
             traces.append(trace)
-            
-        avg_trace = np.array(traces).mean(axis=0)
+        
+        if len(np.array(traces).shape) == 1:
+            avg_trace = np.array(traces)
+        else:
+            avg_trace = np.array(traces).mean(axis=0)
 
         # To determine if a neuron is stimulus responsive, we will first calculate
         # the standard deviation of "pre".
@@ -442,21 +460,25 @@ def calculate_percentage_metric_neurons_per_fish(df, metrics, values, filterby=N
 
 def get_traces(df, pre_frame_num=15, post_frame_num=13, normalize=False, 
                normalize_by_first=False, key='raw_norm_temporal', only_responsive=False, 
-               return_col=None, specific_pulse=None):
+               return_col=None, specific_pulse=None, pulse_key="pulse_frames"):
     """
     Extracts neural traces around pulses from a DataFrame.
-    Returns the x-axis (in frames) and a list of traces.
     Parameters:
+        df (pd.DataFrame or pd.Series): DataFrame or Series containing neuron data.
         pre_frame_num (int): Number of frames before the pulse.
         post_frame_num (int): Number of frames after the pulse.
         normalize (bool): If True, normalizes traces using the pre-injection period.
         normalize_by_first (bool): If True, normalizes using the first pulse's pre-injection period.
         key (str): Column name to extract traces from.
         only_responsive (bool): If True, extracts traces only for responsive pulses.
-        return_col (str or list): If provided, returns additional column values for the traces.
+        return_col (str or list, optional): If provided, returns additional column values for the traces.
         specific_pulse (int, optional): If provided, extracts traces only for the specified pulse.
+        pulse_key (str): Column name containing pulse frame information. Default is "pulse_frames".
     Returns:
-        tuple: x-axis values, list of traces, and optionally additional column values.
+        tuple: 
+            - x (np.ndarray): x-axis values (in frames).
+            - traces (list): List of extracted traces.
+            - return_col_list or return_col_lists (optional): Additional column values if return_col is provided.
     """
     x = np.arange(0-pre_frame_num, 0+post_frame_num+1)
     traces = list()
@@ -471,32 +493,64 @@ def get_traces(df, pre_frame_num=15, post_frame_num=13, normalize=False,
         df = df.to_frame().T
 
     for _, neuron in df.iterrows():
-        pulses = neuron['pulse_frames']
+        pulses = neuron[pulse_key]
 
-        if only_responsive:
-            responsive_pulses = [pr[0] for pr in neuron['pulse_response']]  # individual pulses that the neuron responded to
-            pulse_activity = [pr[1] for pr in neuron['pulse_response']]  # if 1, activated, if 0, suppressed
+        if len(pulses) > 0:
+            if only_responsive:
+                responsive_pulses = [pr[0] for pr in neuron['pulse_response']]  # individual pulses that the neuron responded to
+                pulse_activity = [pr[1] for pr in neuron['pulse_response']]  # if 1, activated, if 0, suppressed
 
-            if normalize_by_first:
-                baseline = 0
+                if normalize_by_first:
+                    baseline = 0
 
-            for i, pulse in enumerate(responsive_pulses):
-                if (pulse_activity[i] == 1 and neuron['activated'] == True) or (pulse_activity[i] == 0 and neuron['suppressed'] == True):
-                    start_frame = pulses[pulse-1] - pre_frame_num  # when the neuron traces will start
-                    stop_frame = pulses[pulse-1] + post_frame_num  # when the neuron traces will end
+                for i, pulse in enumerate(responsive_pulses):
+                    if (pulse_activity[i] == 1 and neuron['activated'] == True) or (pulse_activity[i] == 0 and neuron['suppressed'] == True):
+                        start_frame = pulses[pulse-1] - pre_frame_num  # when the neuron traces will start
+                        stop_frame = pulses[pulse-1] + post_frame_num  # when the neuron traces will end
+
+                        trace = neuron[key][start_frame:stop_frame+1]
+
+                        if normalize:
+                            baseline = np.median(neuron[key][start_frame:pulses[pulse-1]])
+                            trace = (trace - baseline) / baseline
+                        elif normalize_by_first and i == 0:
+                            baseline = np.median(neuron[key][start_frame:pulses[pulse-1]])
+                            trace = (trace - baseline) / baseline
+                        elif normalize_by_first:
+                            trace = (trace - baseline) / baseline
+                        
+                        if specific_pulse is not None and pulse != specific_pulse:
+                            continue
+                        
+                        traces.append(trace)
+
+                        if return_col is not None:
+                            if isinstance(return_col, list):
+                                for col in return_col:
+                                    return_col_lists[col].append(neuron[col])
+                            else:
+                                return_col_list.append(neuron[return_col])
+
+            else:
+                if normalize_by_first:
+                    baseline = 0
+
+                for i, pulse in enumerate(pulses):
+                    start_frame = pulse - pre_frame_num  # when the neuron traces will start
+                    stop_frame = pulse + post_frame_num  # when the neuron traces will end
 
                     trace = neuron[key][start_frame:stop_frame+1]
 
                     if normalize:
-                        baseline = np.median(neuron[key][start_frame:pulses[pulse-1]])
+                        baseline = np.median(neuron[key][start_frame:pulse])
                         trace = (trace - baseline) / baseline
                     elif normalize_by_first and i == 0:
-                        baseline = np.median(neuron[key][start_frame:pulses[pulse-1]])
+                        baseline = np.median(neuron[key][start_frame:pulse])
                         trace = (trace - baseline) / baseline
                     elif normalize_by_first:
                         trace = (trace - baseline) / baseline
-                    
-                    if specific_pulse is not None and pulse != specific_pulse:
+
+                    if specific_pulse is not None and i + 1 != specific_pulse:
                         continue
                     
                     traces.append(trace)
@@ -507,37 +561,6 @@ def get_traces(df, pre_frame_num=15, post_frame_num=13, normalize=False,
                                 return_col_lists[col].append(neuron[col])
                         else:
                             return_col_list.append(neuron[return_col])
-
-        else:
-            if normalize_by_first:
-                baseline = 0
-
-            for i, pulse in enumerate(pulses):
-                start_frame = pulse - pre_frame_num  # when the neuron traces will start
-                stop_frame = pulse + post_frame_num  # when the neuron traces will end
-
-                trace = neuron[key][start_frame:stop_frame+1]
-
-                if normalize:
-                    baseline = np.median(neuron[key][start_frame:pulse])
-                    trace = (trace - baseline) / baseline
-                elif normalize_by_first and i == 0:
-                    baseline = np.median(neuron[key][start_frame:pulse])
-                    trace = (trace - baseline) / baseline
-                elif normalize_by_first:
-                    trace = (trace - baseline) / baseline
-
-                if specific_pulse is not None and i + 1 != specific_pulse:
-                    continue
-                
-                traces.append(trace)
-
-                if return_col is not None:
-                    if isinstance(return_col, list):
-                        for col in return_col:
-                            return_col_lists[col].append(neuron[col])
-                    else:
-                        return_col_list.append(neuron[return_col])
 
     if return_col is not None:
         if isinstance(return_col, list):
@@ -1390,3 +1413,151 @@ def sort_by_peak_with_indices(data, separate_array=None, window=10):
         return sorted_data, sorted_separate_array, sorting_indices
 
     return sorted_data, sorting_indices
+
+
+def find_twitch_responsive(tank, min_pulses=None, **kwargs):
+    """
+    Identify twitch-responsive neurons in a tank and update the corresponding DataFrame.
+    This function processes each fish in the provided tank to determine which neurons are 
+    responsive to twitch stimuli. It updates the unrolled DataFrame for each fish with 
+    information about twitch responsiveness, activation, and suppression. The updated 
+    DataFrame is then saved to an HDF5 file.
+    Parameters:
+        tank (BrukerTank): The BrukerTank object containing fish and their associated data.
+        min_pulses (int, optional): Minimum number of pulses required for a neuron to be 
+            considered twitch-responsive. If not provided, defaults to half the number 
+            of twitch frames.
+        **kwargs: Additional keyword arguments passed to the `find_stimulus_responsive` 
+            function.
+    Returns:
+        None
+    Notes:
+        - The function modifies the unrolled DataFrame for each fish in the tank.
+    """
+    fish_dfs = []
+    for fish in tank.fish:
+        fish_df = tank.unrolled_df[tank.unrolled_df["fish_id"] == fish.fish_id].reset_index(drop=True)
+        
+        fish_df["twitch_frames"] = [fish.temporal_df.loc[0, "twitch_frames"]] * len(fish_df)
+        fish_df["twitch_responsive"] = None
+        fish_df["twitch_activated"] = None
+        fish_df["twitch_suppressed"] = None
+
+        if len(fish.temporal_df.loc[0, "twitch_frames"]) > 0:
+            if min_pulses is None:
+                min_pulses = np.ceil(len(fish.temporal_df.loc[0, "twitch_frames"]) / 2)
+
+            # Identify twitch-responsive neurons and update the DataFrame with response information.
+            stim_responsive, activated, suppressed, pulse_responses = find_stimulus_responsive(fish, pulse_key="twitch_frames", **kwargs)
+        
+            fish_df["twitch_responsive"] = False
+            fish_df["twitch_activated"] = False
+            fish_df["twitch_suppressed"] = False
+            for i, neuron in enumerate(stim_responsive):
+                if len(pulse_responses[i]) >= min_pulses:
+                    fish_df.at[neuron, 'twitch_responsive'] = True
+
+                    if neuron in activated:
+                        fish_df.at[neuron, 'twitch_activated'] = True
+                    
+                    elif neuron in suppressed:
+                        fish_df.at[neuron, 'twitch_suppressed'] = True
+
+        fish_dfs.append(fish_df)
+        fish_df.to_hdf(fish.exp_path.joinpath('unrolled_temporal.h5'), key='unrolled_temporal', mode='w')
+
+    # Concatenate the DataFrames for all fish
+    df = pd.concat(fish_dfs, ignore_index=True)
+    df.to_hdf(tank.folder_path.joinpath('unrolled_temporal.h5'), key='unrolled_temporal', mode='w')
+    
+    return df
+
+
+def pca_clustering(df, filterby=None, colorby=None, colors=None, key='raw_norm_temporal', n_components=3):
+    '''PCA clustering on individual neuron responses. Plots 3D components using matplotlib.
+    filterby: runs separate clustering based on the filters
+    colorby: colors each point based on the filter'''
+    if colorby is not None and colorby not in df.columns:
+        raise ValueError("Given colorby filter is not a column in the df")
+
+    def plot_components(components, color_vals, total_var, title, n_components):
+        if n_components == 3:
+            fig = plt.figure(figsize=(6, 6))
+            ax = fig.add_subplot(111, projection='3d')
+            if color_vals is not None:
+                scatter = ax.scatter(components[:, 0], components[:, 1], components[:, 2], c=color_vals, s=30, alpha=0.5)
+                if hasattr(color_vals, 'unique'):
+                    labels = color_vals.unique()
+                else:
+                    labels = np.unique(color_vals)
+                if len(labels) < 20:  # Only show legend if not too many classes
+                    legend1 = ax.legend(*scatter.legend_elements(), title=colorby)
+                    ax.add_artist(legend1)
+            else:
+                ax.scatter(components[:, 0], components[:, 1], components[:, 2], c=color_vals, s=30)
+            ax.set_xlabel('PC 1')
+            ax.set_ylabel('PC 2')
+            ax.set_zlabel('PC 3')
+            ax.set_title(f"{title} - Total Explained Variance: {total_var:.2f}%")
+            plt.tight_layout()
+            plt.show()
+        
+        elif n_components == 2:
+            fig, ax = plt.subplots(figsize=(6, 6))
+            if color_vals is not None:
+                scatter = ax.scatter(components[:, 0], components[:, 1], c=color_vals, s=30, alpha=0.5)
+                if hasattr(color_vals, 'unique'):
+                    labels = color_vals.unique()
+                else:
+                    labels = np.unique(color_vals)
+                if len(labels) < 20:
+                    legend1 = ax.legend(*scatter.legend_elements(), title=colorby)
+                    ax.add_artist(legend1)
+            else:
+                ax.scatter(components[:, 0], components[:, 1], s=30)
+            ax.set_xlabel('PC 1')
+            ax.set_ylabel('PC 2')
+            ax.set_title(f"{title} - Total Explained Variance: {total_var:.2f}%")
+            plt.tight_layout()
+            plt.show()
+
+    if filterby is not None:
+        for filter in filterby:
+            if filter not in df.columns:
+                raise ValueError("Given filter is not a column in the df")
+        filter_groups = df.groupby(filterby).size().reset_index()
+            
+        for _, row in filter_groups.iterrows():
+            conditions = [row[col] for col in filterby]
+
+            filters = list()
+            for col, cond in zip(filterby, conditions):
+                if isinstance(cond, str):
+                    filters.append(f"(df['{col}'] == '{cond}')")
+                else:
+                    filters.append(f"(df['{col}'] == {cond})")
+
+            subdf = df[eval(" & ".join(filters))]
+            traces = np.array(subdf.loc[:, key])
+            traces = np.array([np.array(trace) for trace in traces])
+                    
+            pca = PCA(n_components=n_components)
+            components = pca.fit_transform(traces)
+
+            total_var = pca.explained_variance_ratio_.sum() * 100
+
+            title = " - ".join([str(cond) for cond in conditions])
+            color_vals = colors if colors is not None else None
+            plot_components(components, color_vals, total_var, title, n_components)
+    else:
+        traces = np.array(df.loc[:, key])
+        traces = np.array([np.array(trace) for trace in traces])
+                
+        pca = PCA(n_components=n_components)
+        components = pca.fit_transform(traces)
+
+        total_var = pca.explained_variance_ratio_.sum() * 100
+
+        title = ""
+        color_vals = colors if colors is not None else None
+        plot_components(components, color_vals, total_var, title, n_components)
