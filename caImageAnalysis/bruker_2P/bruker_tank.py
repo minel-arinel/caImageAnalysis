@@ -407,3 +407,45 @@ class BrukerTank():
 
             if savefig:
                 plt.savefig(save_path.joinpath(f"hierarchical_clustering_{max_inter_cluster_dist}.pdf"), transparent=True)
+
+    def find_twitches(self, pulse_frames, **kwargs):
+        """
+        Identify and filter twitches for each fish in the dataset.
+        This method processes twitch events detected for each fish, removes twitches
+        that are too close to pulse frames or other twitches, and returns a dictionary
+        of filtered twitch events.
+        Parameters:
+            pulse_frames (dict): A dictionary where keys are plane indices (as integers)
+                and values are lists or arrays of pulse frame indices for the corresponding plane.
+            **kwargs: Additional keyword arguments passed to the `find_twitches` method
+                of each fish object.
+        Returns:
+            dict: A dictionary where keys are fish IDs and values are arrays of unique,
+                filtered twitch frame indices for each fish.
+        Notes:
+            - Twitches that occur within 1 frame of a pulse frame are removed.
+            - Twitches that occur within 1 frame of each other across different planes
+              are also removed, keeping the smaller frame index of the conflicting twitches.
+        """
+        twitches_dict = {fish.fish_id: [] for fish in self.fish}
+        
+        for fish in self.fish:
+            twitches = fish.find_twitches(plot=False, **kwargs)
+            
+            for plane in twitches:
+                pfs = pulse_frames[int(plane)]
+                tws = twitches[plane]
+                
+                # Remove twitches that are within 1 frame of a pulse frame
+                tws = np.array([tw for tw in tws if not any(abs(tw - pf) <= 1 for pf in pfs)])
+                
+                if len(tws) > 0:
+                    twitches_dict[fish.fish_id].extend(tws)
+            
+            twitches_dict[fish.fish_id] = np.unique(twitches_dict[fish.fish_id])
+            
+            # Remove twitches that are within 1 frame of each other due to twitches from different planes
+            # Keep the smaller frame of the twitch
+            twitches_dict[fish.fish_id] = twitches_dict[fish.fish_id][np.diff(np.insert(twitches_dict[fish.fish_id], 0, -2)) > 1]
+        
+        return twitches_dict

@@ -6,6 +6,8 @@ import numpy as np
 import os
 import pandas as pd
 from pathlib import Path
+from scipy.ndimage import gaussian_filter1d
+from scipy.signal import find_peaks
 import tifffile
 
 from .bruker_utils import round_microseconds
@@ -604,3 +606,64 @@ class BrukerFish(Fish):
             return (x_microns_per_pixel, y_microns_per_pixel, z_microns_per_pixel)
         else:
             return (x_microns_per_pixel, y_microns_per_pixel)
+        
+    def find_twitches(self, plot=False, sigma=0, **kwargs):
+        """
+        Identifies twitch events based on x and y shifts from motion correction.
+        Parameters:
+            plot (bool, optional): If True, generates plots for each plane showing 
+                the x shifts, y shifts, total shifts, and detected twitch events. 
+                Defaults to False.
+            **kwargs: Additional keyword arguments passed to the `find_peaks` 
+                function for peak detection.
+        Returns:
+            dict: A dictionary where keys are plane numbers and values are arrays 
+                of frame indices corresponding to detected twitch events.
+        Notes:
+            - The function retrieves motion correction data from the `mesmerize` 
+              output and processes it manually to calculate shifts.
+            - Planes without identified components or missing data are skipped 
+              during processing.
+        """
+        '''Finds twitch events using x and y shifts from motion correction'''
+        mes_df = uuid_to_plane(load_mesmerize(self))
+
+        all_peaks = dict()  # stores all the peaks for each plane
+
+        for i, row in mes_df.iterrows():
+            if row.algo == 'mcorr':
+                # Get the shifts manually instead of using mesmerize's get_shifts() function because it returns it weird
+                x_shifts, y_shifts = np.load(os.path.join(self.data_paths['mesmerize'], row.outputs['shifts']))
+                
+                # Calculate the total shifts per frame as the sum of all x and y shifts
+                shifts = np.sum(np.abs(x_shifts), axis=1) + np.sum(np.abs(y_shifts), axis=1)
+                if sigma > 0:
+                    smoothed_shifts = gaussian_filter1d(shifts, sigma=sigma)
+                    peaks, _ = find_peaks(smoothed_shifts, **kwargs)
+                else:
+                    peaks, _ = find_peaks(shifts, **kwargs)
+
+                plane = get_plane_number(row)
+                all_peaks[plane] = peaks
+
+                if plot:
+                    try:
+                        pulse_frames = self.temporal_df.loc[int(plane), 'pulse_frames']
+
+                        plt.figure(figsize=(10, 5))
+                        # plt.plot(np.sum(np.abs(x_shifts), axis=1), label='x_shifts')
+                        # plt.plot(np.sum(np.abs(y_shifts), axis=1), label='y_shifts')
+                        plt.plot(shifts, label='total_shifts')
+
+                        if sigma > 0:
+                            plt.plot(smoothed_shifts, label='smoothed_shifts')
+
+                        plt.plot(peaks, shifts[peaks], "x", label='twitch')
+                        plt.title(f'plane {plane} - twitch frames: {peaks} - pulse frames: {pulse_frames}')
+                        plt.legend()
+                    
+                    except KeyError:
+                        # we might not have any components identified in a plane
+                        pass
+
+        return all_peaks
