@@ -5,9 +5,8 @@ import pymannkendall as mk
 import scikit_posthocs as sp
 from scipy.stats import *
 from sklearn.preprocessing import PowerTransformer
-import statsmodels.formula.api as smf
 import statsmodels.api as sm
-import statsmodels.formula.api as ols
+import statsmodels.formula.api as smf
 
 
 global alpha # Significance level for hypothesis tests
@@ -421,7 +420,7 @@ def cohens_d(a, b, use_hedges=False):
     return d
 
 
-def cliffs_delta(a, b):
+def cliffs_delta(a, b, verbose=True):
     """
     Compute Cliff's Delta effect size for two independent samples.
     Parameters:
@@ -436,18 +435,22 @@ def cliffs_delta(a, b):
     # Compute rank comparisons using broadcasting
     rank_sum = np.sum(a[:, None] > b) - np.sum(a[:, None] < b)
     delta = rank_sum / (n_x * n_y)
-    print(f"Cliff's Delta: {delta:.5f}")
+
+    if verbose:
+        print(f"Cliff's Delta: {delta:.5f}")
 
     # Interpretation of effect size (use absolute value for categorization)
     abs_delta = abs(delta)
-    if abs_delta < 0.147:
-        print("The effect size is negligible.")
-    elif abs_delta < 0.33:
-        print("The effect size is small.")
-    elif abs_delta < 0.474:
-        print("The effect size is medium.")
-    else:
-        print("The effect size is large.")
+
+    if verbose:
+        if abs_delta < 0.147:
+            print("The effect size is negligible.")
+        elif abs_delta < 0.33:
+            print("The effect size is small.")
+        elif abs_delta < 0.474:
+            print("The effect size is medium.")
+        else:
+            print("The effect size is large.")
 
     return delta
 
@@ -463,7 +466,7 @@ def eta_squared(df, dv, ivs):
         dict: Eta-squared values for each independent variable.
     """
     formula = f"{dv} ~ {' + '.join(['C(' + iv + ')' for iv in ivs])}"
-    model = ols.ols(formula, data=df).fit()
+    model = smf.ols(formula, data=df).fit()
     anova_table = sm.stats.anova_lm(model, typ=2)  # Type 2 ANOVA (more robust for unbalanced data)
 
     ss_total = sum(anova_table['sum_sq'])  # Total Sum of Squares
@@ -606,84 +609,11 @@ def likelihood_ratio_test(full_model, reduced_model):
     return p_value
 
 
-def mixed_effects_model(df, ind_var_1, ind_var_2, subject, ind_var_1_reference=None, ind_var_2_reference=None):
-    """
-    Perform mixed-effects model on a dataframe where:
-    - Each row represents a time point (repeated measure).
-    - Each column represents an individual sample (subject).
-    Parameters:
-        df (pd.DataFrame): DataFrame where rows are repeated measures (time points)
-                           and columns are individual samples (subjects).
-        ind_var_1 (str): Name of the first independent variable.
-        ind_var_2 (str): Name of the second independent variable.
-        subject (str): Name of the subject variable.
-        ind_var_1_reference (str, optional): Reference level for the first independent variable.
-        ind_var_2_reference (str, optional): Reference level for the second independent variable.
-    Returns:
-        statsmodels.regression.mixed_linear_model.MixedLMResults: Fitted mixed-effects model results.
-    """
-    df_long = df.reset_index().melt(id_vars="index", var_name=ind_var_1, value_name="Value")
-    df_long = df_long[df_long["Value"].notna()]
-    df_long = df_long.reset_index(drop=True)
-    df_long[subject] = (df_long.index // 5) + 1
-    df_long.rename(columns={df_long.columns[0]: ind_var_2}, inplace=True) 
-    df_long["Value"] = pd.to_numeric(df_long["Value"])
-
-    if ind_var_1_reference is None:
-        ind_var_1_effect = f"C({ind_var_1})"
-    else:
-        ind_var_1_effect = f"C({ind_var_1}, Treatment(reference='{ind_var_1_reference}'))"
-
-    if ind_var_2_reference is None:
-        ind_var_2_effect = f"C({ind_var_2})"
-    else:
-        ind_var_2_effect = f"C({ind_var_2}, Treatment(reference={ind_var_2_reference}))"
-
-    # Fit full model with interaction
-    model_full = smf.mixedlm(f"Value ~ {ind_var_1_effect} * {ind_var_2_effect}", 
-                        data=df_long, groups=subject)
-    result_full = model_full.fit(reml=True)
-
-    # Fit reduced model without interaction
-    model_reduced = smf.mixedlm(f"Value ~ {ind_var_1_effect} + {ind_var_2_effect}", 
-                            data=df_long, groups=subject)
-    result_reduced = model_reduced.fit(reml=True)
-
-    if likelihood_ratio_test(result_full, result_reduced) < alpha:
-        print("The interaction effect is statistically significant.")
-        return result_full
-    else:
-        # Fit reduced model without independent variable 1
-        model_var1_reduced = smf.mixedlm(f"Value ~ {ind_var_2_effect}", data=df_long, groups=subject)
-        result_var1_reduced = model_var1_reduced.fit(reml=False)
-
-        # Fit reduced model without independent variable 2
-        model_var2_reduced = smf.mixedlm(f"Value ~ {ind_var_1_effect}", data=df_long, groups=subject)
-        result_var2_reduced = model_var2_reduced.fit(reml=False)
-    
-        var1_effect = False
-        var2_effect = False
-        print(f"Testing Main Effect of {ind_var_1}:")
-        if likelihood_ratio_test(result_reduced, result_var1_reduced) < alpha:
-            print(f"The main effect of {ind_var_1} is statistically significant.")
-            var1_effect = True
-        
-        print(f"Testing Main Effect of {ind_var_2}:")
-        if likelihood_ratio_test(result_reduced, result_var2_reduced) < alpha:
-            print(f"The main effect of {ind_var_2} is statistically significant.")
-            var2_effect = True
-            
-        if var1_effect or var2_effect:
-            return result_reduced
-        else:
-            print("No main effects were found.")
-
-
 def friedman_test(df):
     """
     Perform Friedman test for non-parametric repeated measures analysis.
     Parameters:
-        df (pd.DataFrame): Rows are repeated measures (time points), columns are individual samples (subjects).
+        df (pd.DataFrame): Rows are repeated measures, columns are individual samples.
     Returns:
         dict: Dictionary with Friedman test statistic, p-value, and interpretation.
     """
@@ -772,60 +702,297 @@ def dunns_multiple_comparisons_test(df, control=None):
 	else:
 		# Return full pairwise comparison matrix
 		return adjusted_dunn_results
+    
 
-
-def sidak_multiple_comparisons_test(df, factor_name="Factor", factor_reference=None, time_reference=None, interaction=False, **kwargs):
+def sidak_multiple_comparisons_test(
+    df: pd.DataFrame,
+    between: str = None,
+    within: str = None,
+    between_reference: 'Union[str, List[str], None]' = None,
+    within_reference: 'Union[str, List[str], None]' = None,
+    interaction: bool = False,
+    melt_df: bool = False,
+    **kwargs
+) -> pd.DataFrame:
     """
-    Perform Šídák test for multiple comparisons.
+    Perform Šídák-corrected pairwise comparisons for between- and/or within-subject factors.
     Parameters:
-        df (pd.DataFrame): DataFrame with rows as repeated measures (time points) 
-                            and columns as individual samples (subjects).
-        control (optional): Specify a control time point (must match one of the DataFrame's index values).
-                            If provided, only comparisons between the control and all other time points are returned.
-                            If None, all pairwise comparisons between time points are returned.
+        df (pd.DataFrame): DataFrame containing either wide-format or already-melted long-format data.
+        between (str, optional): Between-subject factor column name. Required if using between-subject comparison.
+        within (str, optional): Within-subject factor column name. Required if using within-subject comparison.
+        between_reference (str or list of str, optional): One or more reference levels to focus comparisons on for the between-subject factor.
+        within_reference (str or list of str, optional): One or more reference levels to focus comparisons on for the within-subject factor.
+        interaction (bool, optional): Whether to test interaction contrasts (default: False).
+        melt_df (bool, optional): If True, reshapes wide-format DataFrame to long format using `melt_dataframe`.
+        **kwargs: Additional arguments passed to `pingouin.pairwise_tests`.
     Returns:
-        pd.DataFrame or pd.Series:
-            - If control is None, returns a DataFrame with Dunn's test p-values for all pairwise comparisons.
-            - If a control is specified, returns a Series with p-values comparing each time point to the control.
+        pd.DataFrame: DataFrame containing pairwise comparison results filtered based on references and contrast structure.
     """
-    # Convert wide format (time points x subjects) to long format
-    df_long = df.reset_index().melt(id_vars="index", var_name=factor_name, value_name="Value")
-    df_long = df_long[df_long["Value"].notna()]
-    df_long = df_long.reset_index(drop=True)
-    df_long["Subject"] = (df_long.index // 5) + 1
-    df_long.rename(columns={df_long.columns[0]: "Time"}, inplace=True) 
-    df_long["Value"] = pd.to_numeric(df_long["Value"])
+    if not isinstance(between_reference, list):
+        between_reference = [between_reference]
+
+    if not isinstance(within_reference, list):
+        within_reference = [within_reference]
+
+    if melt_df:
+        if 'subject' in kwargs:
+            df = melt_dataframe(df, between, kwargs['dv'], within=within, subject=kwargs['subject'])
+        else:
+            df = melt_dataframe(df, between, kwargs['dv'], within=within)
 
     # Run pairwise t-tests for repeated measures using Šídák correction
-    sidak_results = pg.pairwise_ttests(dv='Value', within='Time', subject='Subject', 
-                                       between=factor_name, data=df_long, padjust='sidak', 
+    sidak_results = pg.pairwise_tests(data=df,
+                                       between=between, within=within, padjust='sidak', 
                                        interaction=interaction, **kwargs)
 
-    if interaction:
-        # Show only the interaction terms
-        sidak_results = sidak_results[sidak_results["Contrast"] == f"Time * {factor_name}"]
-        if factor_reference is not None:
-            sidak_results = sidak_results[(sidak_results["A"] == factor_reference) | (sidak_results["B"] == factor_reference)]
+    results = []
+    if interaction:  # Show only the interaction terms
+        if within is None:
+            sidak_results_rev = pg.pairwise_ttests(data=df,
+                                       between=between[::-1], within=within, padjust='sidak', 
+                                       interaction=interaction, **kwargs)
+            
+            sidak_results = sidak_results[sidak_results["Contrast"] == " * ".join(between)]
+            sidak_results_rev = sidak_results_rev[sidak_results_rev["Contrast"] == " * ".join(between[::-1])]
 
-        sidak_results_rev = pg.pairwise_ttests(dv='Value', within='Time', subject='Subject', 
-                                       between=factor_name, data=df_long, padjust='sidak', 
+            if between_reference[0] is not None or len(between_reference) > 1:
+                for br, bet_ref in enumerate(between_reference):
+                    if br == 0 and bet_ref is None:
+                        results.append(sidak_results_rev)
+                    elif br == 1 and bet_ref is None:
+                        results.append(sidak_results)
+                    elif br == 0:
+                        results.append(sidak_results_rev[(sidak_results_rev["A"] == bet_ref) | (sidak_results_rev["B"] == bet_ref)])
+                    elif br == 1:
+                        results.append(sidak_results[(sidak_results["A"] == bet_ref) | (sidak_results["B"] == bet_ref)])
+                        
+            else:
+                results.append(sidak_results)
+                results.append(sidak_results_rev)
+
+        # If there are repeated measures       
+        else:
+            sidak_results_rev = pg.pairwise_ttests(data=df,
+                                       between=between, within=within, padjust='sidak', 
                                        interaction=interaction, within_first=False, **kwargs)
-        sidak_results_rev = sidak_results_rev[sidak_results_rev["Contrast"] == f"{factor_name} * Time"]
-        if time_reference is not None:
-            sidak_results_rev = sidak_results_rev[(sidak_results_rev["A"] == time_reference) | (sidak_results_rev["B"] == time_reference)]
+            
+            sidak_results = sidak_results[sidak_results["Contrast"] == within + " * " + between]
+            sidak_results_rev = sidak_results_rev[sidak_results_rev["Contrast"] == between + " * " + within]
 
-        return pd.concat([sidak_results, sidak_results_rev], ignore_index=True)
-        
+            appended = False
+            if between_reference[0] is not None or len(between_reference) > 1:
+                for bet_ref in between_reference:
+                    results.append(sidak_results[(sidak_results["A"] == bet_ref) | (sidak_results["B"] == bet_ref)])
+                    results.append(sidak_results_rev[(sidak_results_rev["A"] == bet_ref) | (sidak_results_rev["B"] == bet_ref)])
+                    appended = True
+
+            if within_reference[0] is not None or len(within_reference) > 1:
+                for with_ref in within_reference:
+                    results.append(sidak_results[(sidak_results["A"] == with_ref) | (sidak_results["B"] == with_ref)])
+                    results.append(sidak_results_rev[(sidak_results_rev["A"] == with_ref) | (sidak_results_rev["B"] == with_ref)])
+                    appended = True
+            
+            if not appended:
+                results.append(sidak_results)
+                results.append(sidak_results_rev)
+
+    # If only looking for main effects    
+    else:
+        if within is None:
+            if between_reference[0] is not None or len(between_reference) > 1:
+                for i, bet_ref in enumerate(between_reference):
+                    results.append(sidak_results[(sidak_results["Contrast"] == between[i]) & ((sidak_results["A"] == bet_ref) | (sidak_results["B"] == bet_ref))])
+            else:
+                for bet in between:
+                    results.append(sidak_results[sidak_results["Contrast"] == bet])
+
+        else:
+            if between_reference[0] is not None or len(between_reference) > 1:
+                results.append(sidak_results[(sidak_results["Contrast"] == between) & ((sidak_results["A"] == between_reference) | (sidak_results["B"] == between_reference))])
+            else:
+                results.append(sidak_results[sidak_results["Contrast"] == between])
+
+            if within_reference[0] is not None or len(within_reference) > 1:
+                results.append(sidak_results[(sidak_results["Contrast"] == within) & ((sidak_results["A"] == within_reference) | (sidak_results["B"] == within_reference))])
+            else:
+                results.append(sidak_results[sidak_results["Contrast"] == within])
+
+    return pd.concat(results, ignore_index=True)
+
+
+def melt_dataframe(df, between, dv="Value", within="Time", subject="Subject"):
+    """
+    Reshape a wide-format DataFrame into long format for use in repeated measures statistical analyses.
+    Parameters:
+        df (pd.DataFrame): Input DataFrame in wide format where columns represent between-subject groups 
+                           and rows represent repeated measures (e.g., time points).
+        between (str): Name of the column to be created for the between-subjects factor (based on original column names).
+        dv (str): Name for the new column representing the dependent variable.
+        within (str, optional): Name for the within-subjects variable (e.g., time points). Defaults to "Time".
+        subject (str, optional): Name for the subject identifier column. Defaults to "Subject".
+    Returns:
+        pd.DataFrame: Long-format DataFrame with columns:
+                      - `within`: Within-subjects factor (e.g., time points).
+                      - `between`: Between-subjects factor (e.g., treatment group).
+                      - `dv`: Dependent variable values.
+                      - `subject`: Subject identifier, assigned sequentially assuming equal numbers of time points per subject.
+    Notes:
+        - Assumes that the number of time points (within levels) is consistent across subjects.
+        - Rows with missing values in the dependent variable are removed before reshaping.
+    """
+    df_long = df.reset_index().melt(id_vars="index", var_name=between, value_name=dv)
+    df_long = df_long[df_long[dv].notna()]
+    df_long = df_long.reset_index(drop=True)
+    df_long[subject] = (df_long.index // len(df_long["index"].unique())) + 1
+    df_long.rename(columns={df_long.columns[0]: within}, inplace=True) 
+    df_long[dv] = pd.to_numeric(df_long[dv])
+
+    return df_long
+
+
+def mixed_effects_model(df, between=None, within=None, between_reference=None, within_reference=None, subject=None, melt_df=False, **kwargs):
+    """
+    Fit and test mixed-effects models for repeated measures data.
+    This function fits linear mixed-effects models to analyze the effects of one or more
+    between- and/or within-subject factors on a dependent variable ("Value"), accounting for
+    repeated measures within subjects. It supports testing for interaction effects and main effects,
+    and can reshape wide-format data to long format if needed.
+    Parameters:
+        df (pd.DataFrame): Input data. Can be in wide or long format.
+        between (str or list of str, optional): Name(s) of between-subject factor(s).
+        within (str or list of str, optional): Name(s) of within-subject factor(s).
+        between_reference (str or list of str, optional): Reference level(s) for between-subject factor(s).
+        within_reference (str or list of str, optional): Reference level(s) for within-subject factor(s).
+        subject (str, optional): Name of the subject identifier column.
+        melt_df (bool, optional): If True, reshapes wide-format data to long format using `melt_dataframe`.
+        **kwargs: Additional keyword arguments passed to `melt_dataframe`.
+    Returns:
+        statsmodels.regression.mixed_linear_model.MixedLMResults or list:
+            - If a significant interaction is found, returns the fitted full model.
+            - If only main effects are significant, returns a list of fitted reduced models.
+            - If no significant effects are found, prints a message and returns None.
+    Notes:
+        - The function first tests for interaction effects between specified factors using a likelihood ratio test.
+        - If the interaction is not significant, it tests main effects individually.
+        - Wide-format data can be reshaped to long format if `melt_df=True`.
+    """
+    if melt_df:
+        if subject is not None:
+            df = melt_dataframe(df, between, within=within, subject=subject, **kwargs)
+        else:
+            df = melt_dataframe(df, between, within=within, **kwargs)
+
+    between = [between] if between is not None and not isinstance(between, list) else between
+    within = [within] if within is not None and not isinstance(within, list) else within
+    between_reference = [between_reference] * len(between) if between is not None and not isinstance(between_reference, list) else between_reference
+    within_reference = [within_reference] * len(within) if within is not None and not isinstance(within_reference, list) else within_reference
+
+    effects = []
+    if between is not None:
+        for i, bet in enumerate(between):
+            if between_reference[i] is None:
+                effects.append(f"C({bet})")
+            elif isinstance(between_reference[i], str):
+                effects.append(f"C({bet}, Treatment(reference='{between_reference[i]}'))")
+            else:
+                effects.append(f"C({bet}, Treatment(reference={between_reference[i]}))")
+
+    if within is not None:
+        for i, with_ in enumerate(within):
+            if within_reference is None:
+                effects.append(f"C({with_})")
+            elif isinstance(within_reference[i], str):
+                effects.append(f"C({with_}, Treatment(reference='{within_reference[i]}'))")
+            else:
+                effects.append(f"C({with_}, Treatment(reference={within_reference[i]}))")
+
+    # Fit full model with interaction
+    model_full = smf.mixedlm(f"Value ~ {' * '.join(effects)}", 
+                        data=df, groups=subject)
+    result_full = model_full.fit(reml=True)
+
+    # Fit reduced model without interaction
+    model_reduced = smf.mixedlm(f"Value ~ {' + '.join(effects)}", 
+                            data=df, groups=subject)
+    result_reduced = model_reduced.fit(reml=True)
+
+    if likelihood_ratio_test(result_full, result_reduced) < alpha:
+        print("The interaction effect is statistically significant.")
+        return result_full
     else:
         results = []
-        if time_reference is not None:
-            results.append(sidak_results[(sidak_results["Contrast"] == "Time") & ((sidak_results["A"] == time_reference) | (sidak_results["B"] == time_reference))])
-        else:
-            results.append(sidak_results[sidak_results["Contrast"] == "Time"])
+        for effect in effects:
+            # Fit reduced model
+            model_main = smf.mixedlm(f"Value ~ {effect}", data=df, groups=subject)
+            result_main = model_main.fit(reml=False)
 
-        if factor_reference is not None:
-            results.append(sidak_results[(sidak_results["Contrast"] == factor_name) & ((sidak_results["A"] == factor_reference) | (sidak_results["B"] == factor_reference))])
+            print(f"\nTesting {effect}:")
+            if likelihood_ratio_test(result_reduced, result_main) < alpha:
+                print(f"{effect} effect is statistically significant.")
+                results.append(result_main)
+                
+        if len(results) > 0:
+            return results
         else:
-            results.append(sidak_results[sidak_results["Contrast"] == factor_name])
+            print("\nNo main effects were found.")
 
-        return pd.concat(results, ignore_index=True)
+
+def add_statistical_asterisks(df):
+    """
+    Annotates a DataFrame with statistical significance asterisks based on p-values.
+    Given a DataFrame containing a column named 'p-corr', this function adds a new column
+    'Significance' with string annotations representing the level of statistical significance:
+        - '****' for p < 0.0001
+        - '***'  for p < 0.001
+        - '**'   for p < 0.01
+        - '*'    for p < 0.05
+        - '#'    for p < 0.1
+        - 'n.s.' for p >= 0.1
+    Parameters:
+        df : pandas.DataFrame
+            Input DataFrame with a 'p-corr' column containing p-values.
+    Returns:
+        pandas.DataFrame
+            The input DataFrame with an added 'Significance' column indicating significance levels.
+    """
+    significance = []
+    for p in df['p-corr']:
+        if p < 0.0001:
+            significance.append('****')
+        elif p < 0.001:
+            significance.append('***')
+        elif p < 0.01:
+            significance.append('**')
+        elif p < 0.05:
+            significance.append('*')
+        elif p < 0.1:
+            significance.append('#')
+        else:
+            significance.append('n.s.')
+    
+    df['Significance'] = significance
+    return df
+
+
+def kruskal_wallis_test(df, dv, between):
+    """
+    Perform Kruskal-Wallis test for non-parametric repeated measures analysis.
+    Parameters:
+        df (pd.DataFrame): DataFrame where rows are repeated measures and columns are individual samples.
+        dv (str): Dependent variable column name.
+        between (str or list of str, optional): Between-subject factor(s).
+        melt_df (bool, optional): If True, reshapes wide-format DataFrame to long format using `melt_dataframe`.
+    Returns:
+        tuple: Kruskal-Wallis test statistic and p-value.
+    """
+    groups = [group.dropna().values for name, group in df.groupby(between)[dv]]
+    stat, p_value = kruskal(*groups)
+
+    print(f"Kruskal-Wallis H: {stat:.3f}, p-value: {p_value:.5f}")
+
+    if p_value < alpha:
+        print("The Kruskal-Wallis test is statistically significant.")
+    else:
+        print("The Kruskal-Wallis test is not statistically significant.")
+
+    return stat, p_value
