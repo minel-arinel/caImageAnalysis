@@ -154,7 +154,7 @@ def add_row_colors(colors, ax_colorbar, bar_width=0.1):
     return ax_colorbar
 
 
-def plot_random_neurons(df, n_neurons, key="raw_norm_temporal", fps=1.3039181000348583, sigma=0):
+def plot_random_neurons(df, n_neurons, key="raw_norm_temporal", fps=1.3039181000348583, sigma=0, show_twitch_events=False):
     """
     Plots the activity of randomly selected neurons from a dataframe.
     Parameters:
@@ -170,10 +170,14 @@ def plot_random_neurons(df, n_neurons, key="raw_norm_temporal", fps=1.3039181000
 
     traces = list()
     pulse_frames = list()
+    if show_twitch_events:
+        twitch_frames = list()
 
     for i, row in selected_neurons.iterrows():
         traces.append(row[key])
         pulse_frames.append(row["pulse_frames"])
+        if show_twitch_events:
+            twitch_frames.append(row["twitch_frames"])
 
     for i, t in enumerate(traces):
         fig, axes = plt.subplots(1, 1, figsize=(10, 1))
@@ -183,6 +187,10 @@ def plot_random_neurons(df, n_neurons, key="raw_norm_temporal", fps=1.3039181000
         
         for pulse in pulse_frames[i]:
             axes.vlines(pulse, 0, 1, color='r')
+
+        if show_twitch_events:
+            for twitch in twitch_frames[i]:
+                axes.vlines(twitch, 0, 1, color='gray', ls='--')
 
         axes.plot(t, color='black')
         axes.set_title(f"neuron {selected_neurons.index[i]}")
@@ -572,70 +580,73 @@ def plot_kde(kde_data, x_vals, colors=None, labels=None):
     plt.xlim(min(x_vals), max(x_vals))
 
 
-def plot_loss_by_component(loss_grid, component_axis, plot_individual=False):
-	"""
-	Plots the loss for a specific component axis (trial, neuron, or time).
-	Parameters:
-		loss_grid (numpy.ndarray): The loss grid containing cross-validation losses.
-		component_axis (int): The axis to analyze (0 for trial, 1 for neuron, 2 for time).
-		plot_individual (bool, optional): Whether to plot individual traces. Defaults to False.
-	Returns:
-		None: The function directly plots the loss and elbow point.
-	Notes:
-		- The function calculates the mean and standard error of the mean (SEM) across traces.
-		- The elbow point is determined using the KneeLocator library.
-	"""
-	plt.figure()
+def plot_loss_by_component(loss_grid, component_axis, plot_individual=False, save_path=None):
+    """
+    Plots the loss for a specific component axis (trial, neuron, or time).
+    Parameters:
+        loss_grid (numpy.ndarray): The loss grid containing cross-validation losses.
+        component_axis (int): The axis to analyze (0 for trial, 1 for neuron, 2 for time).
+        plot_individual (bool, optional): Whether to plot individual traces. Defaults to False.
+    Returns:
+        None: The function directly plots the loss and elbow point.
+    Notes:
+        - The function calculates the mean and standard error of the mean (SEM) across traces.
+        - The elbow point is determined using the KneeLocator library.
+    """
+    plt.figure()
 
-	other_axes = [i for i in range(3) if i != component_axis]
-	n_seeds = loss_grid.shape[3]
-	traces = []
+    other_axes = [i for i in range(3) if i != component_axis]
+    n_seeds = loss_grid.shape[3]
+    traces = []
 
-	for i in range(loss_grid.shape[other_axes[0]]):
-		for j in range(loss_grid.shape[other_axes[1]]):
-			for s in range(n_seeds):
-				if component_axis == 0:
-					if plot_individual:
-						plt.plot(loss_grid[:, i, j, s], color="gray", alpha=0.5)
-					traces.append(loss_grid[:, i, j, s])
+    for i in range(loss_grid.shape[other_axes[0]]):
+        for j in range(loss_grid.shape[other_axes[1]]):
+            for s in range(n_seeds):
+                if component_axis == 0:
+                    if plot_individual:
+                        plt.plot(loss_grid[:, i, j, s], color="gray", alpha=0.5)
+                    traces.append(loss_grid[:, i, j, s])
 
-				elif component_axis == 1:
-					if plot_individual:
-						plt.plot(loss_grid[i, :, j, s], color="gray", alpha=0.5)
-					traces.append(loss_grid[i, :, j, s])
+                elif component_axis == 1:
+                    if plot_individual:
+                        plt.plot(loss_grid[i, :, j, s], color="gray", alpha=0.5)
+                    traces.append(loss_grid[i, :, j, s])
 
-				elif component_axis == 2:
-					if plot_individual:
-						plt.plot(loss_grid[i, j, :, s], color="gray", alpha=0.5)
-					traces.append(loss_grid[i, j, :, s])
+                elif component_axis == 2:
+                    if plot_individual:
+                        plt.plot(loss_grid[i, j, :, s], color="gray", alpha=0.5)
+                    traces.append(loss_grid[i, j, :, s])
 
-	plt.plot(np.mean(traces, axis=0), linewidth=2, color="black")
-	plt.fill_between(
-		np.arange(len(traces[0])),
-		np.mean(traces, axis=0) - sem(traces, axis=0),
-		np.mean(traces, axis=0) + sem(traces, axis=0),
-		color="black",
-		alpha=0.2
-	)
+    plt.plot(np.mean(traces, axis=0), linewidth=2, color="black")
+    plt.fill_between(
+        np.arange(len(traces[0])),
+        np.mean(traces, axis=0) - sem(traces, axis=0),
+        np.mean(traces, axis=0) + sem(traces, axis=0),
+        color="black",
+        alpha=0.2
+    )
 
-	kn = KneeLocator(
-		np.arange(loss_grid.shape[component_axis]),
-		np.mean(traces, axis=0),
-		curve="convex",
-		direction="decreasing"
-	)
-	plt.axvline(kn.knee, linestyle="dashed", color="black", label=f"Elbow point at component {int(kn.knee)}")
-	plt.legend(frameon=False)
+    kn = KneeLocator(
+        np.arange(loss_grid.shape[component_axis]),
+        np.mean(traces, axis=0),
+        curve="convex",
+        direction="decreasing"
+    )
+    plt.axvline(kn.knee, linestyle="dashed", color="black", label=f"Elbow point at component {int(kn.knee)}")
+    plt.legend(frameon=False)
 
-	if component_axis == 0:
-		axis_name = "trial"
-	elif component_axis == 1:
-		axis_name = "neuron"
-	elif component_axis == 2:
-		axis_name = "time"
-	
-	plt.xlabel(f"Number of {axis_name} components ")
-	plt.ylabel("Cross-validation loss")
+    if component_axis == 0:
+        axis_name = "trial"
+    elif component_axis == 1:
+        axis_name = "neuron"
+    elif component_axis == 2:
+        axis_name = "time"
+
+    plt.xlabel(f"Number of {axis_name} components ")
+    plt.ylabel("Cross-validation loss")
+        
+    if save_path:
+        plt.savefig(save_path.joinpath(f"loss_by_{axis_name}_components.pdf"), transparent=True)
 
 
 def plot_loss_curve(model):
@@ -725,3 +736,56 @@ def rand_jitter(arr):
 
 def jitter(x, y, s=20, color='black', marker='o', cmap=None, norm=None, vmin=None, vmax=None, alpha=None, linewidths=None, verts=None, hold=None, **kwargs):
     return plt.scatter(rand_jitter(x), y, s=s, color=color, marker=marker, cmap=cmap, norm=norm, vmin=vmin, vmax=vmax, alpha=alpha, linewidths=linewidths, **kwargs)
+
+
+def plot_sliceTCA_colorbar(model, sorting_indices, i=0, j=0, k=0, quantile=0.99, cmap='seismic', save_path=None, **kwargs):
+    """
+    Plot the colorbar of a component from a sliceTCA model.
+    Parameters
+        model : object
+            The sliceTCA model object.
+        sorting_indices : tuple
+            Tuple of sorting indices for each mode (e.g., (trials, neurons, time)), or None.
+        i : int, optional
+            Component mode index (default 0, e.g., trial).
+        j : int, optional
+            Component index within the mode (default 0).
+        k : int, optional
+            0 for weights, 1 for slices (default 0).
+        quantile : float, optional
+            Quantile for colorbar limits (default 0.99).
+        cmap : str, optional
+            Colormap to use (default 'seismic').
+        **kwargs
+            Additional keyword arguments passed to plt.colorbar.
+    Returns
+        None
+            Displays a colorbar for the selected component slice.
+    """
+    partitions = model.partitions
+    components = model.get_components(numpy=True)
+
+    current_component = components[i][k][j]
+    if len(list(components[i][k].shape)) == 3:
+        if sorting_indices[partitions[i][k][0]] is not None:
+            current_component = current_component[sorting_indices[partitions[i][k][0]]]
+        if sorting_indices[partitions[i][k][1]] is not None:
+            current_component = current_component.T[sorting_indices[partitions[i][k][1]]].T
+
+    min_max = np.quantile(np.abs(current_component), quantile)
+
+    fig, ax = plt.subplots(figsize=(0.25, 3))
+    norm = plt.Normalize(vmin=-min_max, vmax=min_max)
+    cb = plt.colorbar(
+        plt.cm.ScalarMappable(norm=norm, cmap=cmap),
+        cax=ax, **kwargs
+    )
+    cb.set_label('Component Value')
+
+    if save_path:
+        if i == 0:
+            plt.savefig(save_path.joinpath(f"sliceTCA_colorbar_trial_component_{j}.pdf"), transparent=True)
+        elif i == 1:
+            plt.savefig(save_path.joinpath(f"sliceTCA_colorbar_neuron_component_{j}.pdf"), transparent=True)
+        elif i == 2:
+            plt.savefig(save_path.joinpath(f"sliceTCA_colorbar_time_component_{j}.pdf"), transparent=True)
