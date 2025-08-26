@@ -34,6 +34,38 @@ def rotate_image(image, path=None, angle=0):
     return rotated_image
 
 
+def rotate_coords(coords, image_shape, angle_deg):
+	"""
+	Rotate coordinates using the same convention as scipy.ndimage.rotate.
+	The rotation is performed around the center of the image, with positive angles
+	corresponding to counter-clockwise rotation.
+
+	Parameters:
+		coords (array-like): [x, y] coordinates to rotate.
+		image_shape (tuple): Shape of the image as (height, width).
+		angle_deg (float): Rotation angle in degrees.
+
+	Returns:
+		np.ndarray: Rotated [x, y] coordinates.
+	"""
+	# Convert to numpy array
+	coords = np.array(coords)
+	# Get image center (y, x)
+	center = np.array([image_shape[0] / 2, image_shape[1] / 2])
+	# Shift coordinates to origin (center)
+	shifted = coords - center[::-1]  # coords is [x, y], center is [y, x]
+	# Convert angle to radians and invert sign for ndimage.rotate convention
+	angle_rad = np.deg2rad(-angle_deg)
+	# Rotation matrix
+	rot_matrix = np.array([[np.cos(angle_rad), -np.sin(angle_rad)],
+						   [np.sin(angle_rad),  np.cos(angle_rad)]])
+	# Apply rotation
+	rotated = rot_matrix @ shifted
+	# Shift back
+	rotated_coords = rotated + center[::-1]
+	return rotated_coords
+
+
 def save_seq_with_text(fish, plane):
     '''TODO: Save individual tif files with a stimulus text'''
     '''Saves individual tif files with the stimulus text'''
