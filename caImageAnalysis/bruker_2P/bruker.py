@@ -225,8 +225,36 @@ class BrukerFish(Fish):
 
         return volumetric
     
-    def create_frametimes_txt(self):
-        '''Creates a frametimes.txt file from the log xml file'''
+    def create_frametimes_txt(self, drop_frames=[]):
+        """
+        Generate a `frametimes.txt` file from the Bruker (PrairieView) XML log and initialize frame timing metadata.
+
+        This method parses the experiment's XML log to extract absolute frame timestamps and writes them
+        to a plain-text file (one timestamp per line) in the experiment folder. If `self.region` is set,
+        the file is saved as `<region>_frametimes.txt`; otherwise it is saved as `frametimes.txt`.
+
+        The function stops writing when an anatomy stack is encountered (frames whose `ParameterSet`
+        contains the substring "anatomy"). Timestamps are recorded in the format `%H:%M:%S.%f` (24-hour
+        clock with microseconds). If the XML date string uses AM/PM, a 12-hour to 24-hour adjustment is
+        applied.
+
+        After writing the file, `self.raw_text_frametimes_to_df()` is called to populate
+        `self.frametimes_df`. If gavage pulses, voltage output, or markpoints are available,
+        their events are aligned to the frame times.
+
+        Parameters
+        ----------
+        drop_frames : list[int], optional
+            Zero-based frame indices to skip when generating timestamps (e.g., to remove
+            corrupted or dropped frames). Defaults to an empty list.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the expected log file cannot be found in `self.data_paths['log']`.
+        KeyError
+            If required XML attributes are missing (e.g., `pvscan['date']` or `frame['relativeTime']`).
+        """
         with open(self.data_paths['log'], 'r') as file:
             log = file.read()
 
@@ -250,7 +278,9 @@ class BrukerFish(Fish):
 
         with open(frametimes_path, 'w') as file:
             for i, frame in enumerate(frames):
-                if 'anatomy' in frame['parameterset']:  # if the anatomy stack starts
+                if i in drop_frames:
+                    continue
+                elif 'anatomy' in frame['parameterset']:  # if the anatomy stack starts
                     break
                 else:
                     str_abstime = round_microseconds(frame['relativetime'])
@@ -277,8 +307,33 @@ class BrukerFish(Fish):
         else:
             print('no voltage output or markpoints detected')
     
-    def combine_channel_images(self, channel):
-        '''Combines a channel's images'''
+    def combine_channel_images(self, channel, drop_frames=[]):
+        """
+        Concatenate Bruker OME-TIFF stacks from a single channel into one multi-page TIFF and save it to disk.
+
+        This utility walks the experiment's raw folder, collects all OME-TIFF files that belong to the
+        requested imaging **channel** (e.g., `Ch1` or `Ch2`), loads them in acquisition order, and
+        concatenates them along the frame axis. The result is written as a BigTIFF to the experiment
+        directory. If `self.region` is set, the output is named `<region>_<channel>.tif`; otherwise it is
+        `<channel>.tif`. The path is stored in `self.data_paths['raw_image']`.
+
+        If an **anatomy stack** is present (identified by a different number of planes than the main time
+        series), it is automatically excluded from the concatenation and its path is recorded in
+        `self.data_paths['anatomy']`.
+
+        Parameters
+        ----------
+        channel : str
+            Channel identifier to combine; must be either `'Ch1'` or `'Ch2'`.
+        drop_frames : list[int], optional
+            Zero-based indices of OME-TIFF files (in sorted acquisition order) to skip when concatenating
+            (e.g., to discard corrupted stacks). Defaults to an empty list.
+
+        Raises
+        ------
+        ValueError
+            If `channel` is not `'Ch1'` or `'Ch2'`.
+        """
         channels = ['Ch1', 'Ch2']
         if channel not in channels:
             raise ValueError(f'channel needs to be one of {channels}')
@@ -288,7 +343,7 @@ class BrukerFish(Fish):
             if entry.name.endswith('.ome.tif') and channel in entry.name:
                 ch_image_paths.append(Path(entry.path))
 
-        ch_images = [np.array(tifffile.imread(img_path)) for img_path in ch_image_paths]
+        ch_images = [np.array(tifffile.imread(img_path)) for i, img_path in enumerate(ch_image_paths) if i not in drop_frames]
         
         if len(self.anatomy) == 0:
             # find out if there is an anatomy stack
@@ -513,15 +568,7 @@ class BrukerFish(Fish):
                     try:
                         pulses = [fts[fts.pulse == pulse].index.values[0] for pulse in fts.pulse.unique() if pulse != fts.loc[0, 'pulse']]
                     except:
-                        pulses = [0]
-
-                    if 'DOI' in str(self.data_paths['raw']) and pulses == [0]:
-                        with os.scandir(self.exp_path) as entries:
-                            for entry in entries:
-                                if '_pre' in entry.name:
-                                    pre_path = Path(entry.path)
-
-                        pulses = [len([file for file in os.listdir(pre_path) if file.endswith('.ome.tif')])]
+                        pulses = None
 
                     pulse_frames.append(pulses)
 

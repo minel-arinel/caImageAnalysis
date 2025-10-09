@@ -2,6 +2,7 @@ import numpy as np
 import os
 import pandas as pd
 from pathlib import Path
+import re
 
 from caImageAnalysis import BrukerFish
 from caImageAnalysis.temporal_new import *
@@ -227,7 +228,9 @@ class BrukerTank():
             df['age'] = int(fish.age)
             try:
                 df['stimulus'] = fish.stimulus
-                df['concentration'] = float(fish.concentration[:-2])
+                conc_str = str(fish.concentration)
+                match = re.search(r"[-+]?\d*\.?\d+", conc_str)
+                df['concentration'] = float(match.group(0)) if match else None
             except AttributeError:
                 # if we're not giving any stimuli
                 df["stimulus"] = None

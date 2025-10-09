@@ -34,6 +34,8 @@ def determine_baseline_frame(temporal_df, pre_frame_num=100, save_path=None):
         traces = list()
         for _, row in temporal_df.iterrows():
             pulses = row['pulse_frames']
+            if isinstance(pulses, (int, np.integer)):
+                pulses = [pulses]
 
             for pulse in pulses:
                 start_frame = pulse - t  # when the neuron traces will start
@@ -50,7 +52,7 @@ def determine_baseline_frame(temporal_df, pre_frame_num=100, save_path=None):
     plt.plot(x, sems)
     plt.vlines(kn.knee, 0, plt.ylim()[1], linestyles='dashed')
     plt.ylim(0)
-    plt.xticks(np.arange(0, 101, 5))
+    plt.xticks(np.arange(0, pre_frame_num + 1, max(1, pre_frame_num // 20)))
     _, labels = plt.xticks()
     for label in labels[1::2]:
         label.set_visible(False)
@@ -65,40 +67,74 @@ def determine_baseline_frame(temporal_df, pre_frame_num=100, save_path=None):
     print(f"Ideal number of frames: {kn.knee}")
 
 
-def determine_peak_frame(temporal_df, sigma=4, save_path=None):
+def determine_peak_frame(temporal_df, sigma=4, save_path=None, fallback_window=150):
     """
     Determine the optimal number of frames after injection where most peaks occur.
     Finds the peak frame for each trace and plots a histogram of these peak frames.
-    Parameters:
-        temporal_df (pd.DataFrame): DataFrame with temporal data containing 'pulse_frames' and 'raw_norm_temporal'.
-        sigma (int): Standard deviation for Gaussian kernel used in smoothing the histogram. Default is 4.
-        save_path (str or Path, optional): Path to save the figure as determine_peak_frame.pdf. Default is None.
-    Returns:
-        None
+    
+    This function estimates a common window length using the **minimum inter-pulse distance** across
+    records that have ≥2 pulses. If no record has ≥2 pulses (or the computed window is invalid), a
+    `fallback_window` (in frames) is used so that array slicing always uses valid integer indices.
+
+    Parameters
+    ----------
+    temporal_df : pandas.DataFrame
+        DataFrame with temporal data containing 'pulse_frames' and 'raw_norm_temporal'.
+    sigma : int, default 4
+        Standard deviation for Gaussian kernel used in smoothing the histogram.
+    save_path : str or pathlib.Path, optional
+        If provided, saves the figure as `determine_peak_frame.pdf`.
+    fallback_window : int, default 150
+        Fallback number of frames after each pulse to search for a peak when a valid
+        inter-pulse distance cannot be determined.
+
+    Returns
+    -------
+    None
     """
     min_distance = float('inf')
     for _, row in temporal_df.iterrows():
         pulses = row['pulse_frames']
+        if isinstance(pulses, (int, np.integer)):
+            pulses = [pulses]
         if len(pulses) > 1:
             distances = np.diff(pulses)
             min_distance = min(min_distance, *distances)
 
+    # Fallback if we never observed an inter-pulse distance
+    if not np.isfinite(min_distance) or min_distance <= 0:
+        min_distance = int(fallback_window)
+
     peak_frames = list()
     for _, row in temporal_df.iterrows():
         pulses = row['pulse_frames']
+        if isinstance(pulses, (int, np.integer)):
+            pulses = [pulses]
         for pulse in pulses:
-            start_frame = pulse
-            stop_frame = pulse + min_distance
-
+            start_frame = int(pulse)
+            
+            # Ensure integer stop and clip to trace length per neuron
             for neuron in row["raw_norm_temporal"]:
+                stop_frame = int(min(start_frame + int(min_distance), len(neuron)))
+                if stop_frame <= start_frame:
+                    continue
                 trace = neuron[start_frame:stop_frame]
-                peak_frame = np.argmax(trace)
+                if trace.size == 0:
+                    continue
+                peak_frame = int(np.argmax(trace))
                 peak_frames.append(peak_frame)
 
-    hist, bin_edges = np.histogram(peak_frames, bins=np.arange(min(peak_frames), max(peak_frames) + 1))
+    if len(peak_frames) == 0:
+        print("No peak frames could be determined (check pulse frames and trace lengths).")
+        return
+
+    min_peak = int(np.min(peak_frames))
+    max_peak = int(np.max(peak_frames))
+    bins = np.arange(min_peak, max_peak + 1)
+    hist, bin_edges = np.histogram(peak_frames, bins=bins)
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
 
-    plt.hist(peak_frames, bins=np.arange(min(peak_frames), max(peak_frames) + 1), alpha=0.5, label='Histogram')
+    plt.hist(peak_frames, bins=bins, alpha=0.5, label='Histogram')
     
     smoothed_hist = gaussian_filter1d(hist, sigma=sigma)
     plt.plot(bin_centers, smoothed_hist, label='Smoothed Curve', color='red')
@@ -117,25 +153,45 @@ def determine_peak_frame(temporal_df, sigma=4, save_path=None):
     print(f"Plateau point: {kn.knee}")
 
 
-def unroll_temporal_df(fish, min_pulses=3, **kwargs):
+def unroll_temporal_df(fish, determine_responsive=True, min_pulses=3, **kwargs):
     """
-    Expands the temporal_df of a fish object so that each row represents a single neuron.
-    Parameters:
-        fish (object): The fish object containing temporal_df and other related data.
-        min_pulses (int, optional): Minimum number of pulses required to consider a neuron responsive. Default is 3.
-        **kwargs: Additional keyword arguments passed to the find_stimulus_responsive function.
-    Returns:
-        pd.DataFrame: A DataFrame where each row represents a single neuron with associated temporal data and stimulus response information.
-    Note:
-        - The function assumes that fish.temporal_df contains columns: 'roi_indices', 'plane', 'raw_temporal', 'temporal', 
-        'raw_norm_temporal', 'norm_temporal', 'coms', and 'pulse_frames'.
+    Expand the `temporal_df` of a fish so that each row represents a single neuron.
+
+    By default, this also determines stimulus responsiveness (via `find_stimulus_responsive`) and
+    annotates the unrolled DataFrame with columns describing responsiveness. If you set
+    `determine_responsive=False`, the function *only* unrolls the dataframe and **does not** compute
+    or add any responsiveness-related columns; `min_pulses` and any additional kwargs are ignored.
+
+    Parameters
+    ----------
+    fish : object
+        The fish object containing `temporal_df` and other related data.
+    determine_responsive : bool, optional
+        If True (default), run `find_stimulus_responsive` and annotate the unrolled table.
+        If False, skip responsiveness determination and return only the unrolled table.
+    min_pulses : int, optional
+        Minimum number of pulses required to consider a neuron responsive. Default is 3.
+    **kwargs : dict
+        Additional keyword arguments passed to `find_stimulus_responsive` when
+        `determine_responsive=True`.
+
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame where each row represents a single neuron with associated temporal data.
+        If `determine_responsive=True`, includes columns: `responsive`, `activated`, `suppressed`,
+        and `pulse_response`.
+
+    Notes
+    -----
+    Assumes `fish.temporal_df` contains: 'roi_indices', 'plane', 'raw_temporal', 'temporal',
+    'raw_norm_temporal', 'norm_temporal', 'coms', and 'pulse_frames'.
     """
     unrolled_df = pd.DataFrame(columns=['fish_id', 'plane', 'neuron', 'raw_temporal', 
                                         'temporal', 'raw_norm_temporal', 'norm_temporal',
                                         'roi_index', 'com', 'pulse_frames'])
     
-    # Iterate over each row in fish.temporal_df and each neuron within that row to populate 
-    # the unrolled DataFrame.
+    # Iterate over each row in fish.temporal_df and each neuron within that row to populate
     neuron_count = -1
     for i, row in fish.temporal_df.iterrows():
         for j in range(len(row['roi_indices'])):
@@ -156,27 +212,27 @@ def unroll_temporal_df(fish, min_pulses=3, **kwargs):
 
             unrolled_df = pd.concat([unrolled_df, pd.DataFrame([unrolled_row])], ignore_index=True)
 
-    # Identify stimulus-responsive neurons and update the DataFrame with response information.
-    stim_responsive, activated, suppressed, pulse_responses = find_stimulus_responsive(fish, **kwargs)
-    
-    unrolled_df['responsive'] = False
-    unrolled_df['activated'] = None
-    unrolled_df['suppressed'] = None
-    unrolled_df['pulse_response'] = None
+    if determine_responsive:
+        # Identify stimulus-responsive neurons and update the DataFrame with response information.
+        stim_responsive, activated, suppressed, pulse_responses = find_stimulus_responsive(fish, **kwargs)
+        unrolled_df['responsive'] = False
+        unrolled_df['activated'] = None
+        unrolled_df['suppressed'] = None
+        unrolled_df['pulse_response'] = None
 
-    for i, neuron in enumerate(stim_responsive):
-        unrolled_df.at[neuron, 'pulse_response'] = pulse_responses[i]
+        for i, neuron in enumerate(stim_responsive):
+            unrolled_df.at[neuron, 'pulse_response'] = pulse_responses[i]
 
-        if len(pulse_responses[i]) >= min_pulses:
-            unrolled_df.loc[neuron, 'responsive'] = True
+            if len(pulse_responses[i]) >= min_pulses:
+                unrolled_df.loc[neuron, 'responsive'] = True
 
-            if neuron in activated:
-                unrolled_df.loc[neuron, 'activated'] = True
-                unrolled_df.loc[neuron, 'suppressed'] = False
-            
-            elif neuron in suppressed:
-                unrolled_df.loc[neuron, 'suppressed'] = True
-                unrolled_df.loc[neuron, 'activated'] = False
+                if neuron in activated:
+                    unrolled_df.loc[neuron, 'activated'] = True
+                    unrolled_df.loc[neuron, 'suppressed'] = False
+                
+                elif neuron in suppressed:
+                    unrolled_df.loc[neuron, 'suppressed'] = True
+                    unrolled_df.loc[neuron, 'activated'] = False
 
     # Save the unrolled DataFrame to an HDF5 file.
     unrolled_df.to_hdf(fish.exp_path.joinpath('unrolled_temporal.h5'), key='unrolled_temporal')

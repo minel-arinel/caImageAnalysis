@@ -109,15 +109,14 @@ def add_mcorr(fish, img_paths, default=None, grid=False, **params):
     return df
 
 
-def add_cnmf(fish, img_paths, default=None, grid=False, **params):
+def add_cnmf(fish, img_paths, default=None, grid=False, transient=1, **params):
     '''Runs CNMF with different parameters on Mesmerize
-    grid: if True, creates a grid from the cartesian product of the parameters'''
+    grid: if True, creates a grid from the cartesian product of the parameters
+    transient: decay time of the calcium indicator in seconds. 1 for GCaMP8m, 1.5 for GCaMP6s'''
     df = load_mesmerize(fish)
 
     if not isinstance(img_paths, list):
         raise TypeError('img_paths needs to be list of strings')
-
-    transient = 1  # in seconds; 1 for GCaMP8m, 1.5 for GCaMP6s
 
     if default is None:
         default = \
@@ -599,13 +598,36 @@ def remove_low_t(fish, indices=None, peak_cutoff=100):
 
 
 def plot_t_distribution(row, indices, peak_cutoff=100):
-    '''Plots the distribution of peak fluorescence values below the cutoff'''
+    """
+    Plot a histogram of peak fluorescence values (t.max()) for the selected ROIs,
+    including only those peaks below `peak_cutoff`. Reports how many neurons fall below the cutoff.
+
+    Parameters
+    ----------
+    row : pandas.Series
+        Mesmerize batch row containing CNMF outputs for a plane (expects `row.cnmf`).
+    indices : array-like
+        Indices of ROIs to include (relative to the CNMF "good" set).
+    peak_cutoff : float, default 100
+        Threshold on peak fluorescence; the function reports how many ROIs have
+        `t.max() < peak_cutoff`.
+    """
     temporal = row.cnmf.get_temporal('good')[indices]
-    fig = plt.figure(2, figsize=(10, 1))
-    for t in temporal:
-        if t.max() < peak_cutoff:
-            plt.scatter(t.max(), 1)
-    plt.title(f'{row.item_name}: Peak fluorescence of components below peak_cutoff')
+    
+    # Collect peak values per ROI
+    peak_vals = np.array([t.max() for t in temporal], dtype=float)
+    n_below = int(np.sum(peak_vals < peak_cutoff))
+
+    # Histogram: x-axis = peak values (below cutoff), y-axis = number of neurons (ROIs)
+    fig = plt.figure(2, figsize=(8, 3))
+    ax = plt.gca()
+    peak_vals_below = peak_vals[peak_vals < peak_cutoff]
+    ax.hist(peak_vals_below, bins=30)
+    ax.set_xlabel('Peak fluorescence (t.max())')
+    ax.set_ylabel('Number of neurons')
+    ax.set_title(f"{row.item_name}: Peaks < {peak_cutoff} (n={n_below})")
+    ax.legend()
+    plt.tight_layout()
     plt.show()
 
 
