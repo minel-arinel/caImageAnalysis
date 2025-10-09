@@ -1,768 +1,159 @@
-from pathlib import Path
-from typing import *
+"""Performs CNMF in a separate process"""
+import click
+import caiman as cm
+from caiman.source_extraction.cnmf import cnmf as cnmf
+from caiman.source_extraction.cnmf.params import CNMFParams
+import psutil
 import numpy as np
 import pandas as pd
-from caiman import load_memmap
-from caiman.source_extraction.cnmf import CNMF
-from caiman.source_extraction.cnmf.cnmf import load_CNMF
-from caiman.utils.visualization import get_contours as caiman_get_contours
-from functools import wraps
+import traceback
+from pathlib import Path
+from shutil import move as move_file
 import os
-from copy import deepcopy
+import time
+from datetime import datetime
 
-from ._utils import validate
-from .cache import Cache
-from ..arrays import *
-from ..arrays._base import LazyArray
-
-
-cnmf_cache = Cache()
-
-
-# this decorator MUST be called BEFORE caching decorators!
-def _component_indices_parser(func):
-    @wraps(func)
-    def _parser(instance, *args, **kwargs) -> Any:
-        if "component_indices" in kwargs.keys():
-            component_indices: Union[np.ndarray, str, None] = kwargs["component_indices"]
-        elif len(args) > 0:
-            component_indices = args[0]  # always first positional arg in the extensions
-        else:
-            component_indices = None  # default
-
-        cnmf_obj = instance.get_output()
-
-        # TODO: finally time to learn Python's new switch case
-        accepted = (np.ndarray, str, type(None))
-        if not isinstance(component_indices, accepted):
-            raise TypeError(f"`component_indices` must be one of type: {accepted}")
-
-        if isinstance(component_indices, np.ndarray):
-            pass
-
-        elif component_indices is None:
-            component_indices = np.arange(cnmf_obj.estimates.A.shape[1])
-
-        if isinstance(component_indices, str):
-            accepted = ["all", "good", "bad"]
-            if component_indices not in accepted:
-                raise ValueError(f"Accepted `str` values for `component_indices` are: {accepted}")
-
-            if component_indices == "all":
-                component_indices = np.arange(cnmf_obj.estimates.A.shape[1])
-
-            elif component_indices == "good":
-                component_indices = cnmf_obj.estimates.idx_components
-
-            elif component_indices == "bad":
-                component_indices = cnmf_obj.estimates.idx_components_bad
-        if "component_indices" in kwargs.keys():
-            kwargs["component_indices"] = component_indices
-        else:
-            args = (component_indices, *args[1:])
-
-        return func(instance, *args, **kwargs)
-    return _parser
+# prevent circular import
+if __name__ in ["__main__", "__mp_main__"]:  # when running in subprocess
+    from mesmerize_core import set_parent_raw_data_path, load_batch
+    from mesmerize_core.utils import IS_WINDOWS
+else:  # when running with local backend
+    from ..batch_utils import set_parent_raw_data_path, load_batch
+    from ..utils import IS_WINDOWS
 
 
-def _check_permissions(func):
-    @wraps(func)
-    def __check(instance, *args, **kwargs):
-        cnmf_obj_path = instance.get_output_path()
+def run_algo(batch_path, uuid, data_path: str = None):
+    algo_start = time.time()
+    set_parent_raw_data_path(data_path)
 
-        if not os.access(cnmf_obj_path, os.W_OK):
-            raise PermissionError(
-                "You do not have write access to the hdf5 output file for this batch item"
+    df = load_batch(batch_path)
+    item = df[df["uuid"] == uuid].squeeze()
+
+    input_movie_path = item["input_movie_path"]
+    # resolve full path
+    input_movie_path = str(df.paths.resolve(input_movie_path))
+
+    # make output dir
+    output_dir = Path(batch_path).parent.joinpath(str(uuid))
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    params = item["params"]
+    print(
+        f"************************************************************************\n\n"
+        f"Starting CNMF item:\n{item}\nWith params:{params}"
+    )
+
+    # adapted from current demo notebook
+    if "MESMERIZE_N_PROCESSES" in os.environ.keys():
+        try:
+            n_processes = int(os.environ["MESMERIZE_N_PROCESSES"])
+        except:
+            n_processes = psutil.cpu_count() - 1
+    else:
+        n_processes = psutil.cpu_count() - 1
+    # Start cluster for parallel processing
+    c, dview, n_processes = cm.cluster.setup_cluster(
+        backend="local", n_processes=n_processes, single_thread=False
+    )
+
+    # merge cnmf and eval kwargs into one dict
+    cnmf_params = CNMFParams(params_dict=params["main"])
+    # Run CNMF, denote boolean 'success' if CNMF completes w/out error
+    try:
+        fname_new = cm.save_memmap(
+            [input_movie_path], base_name=f"{uuid}_cnmf-memmap_", order="C", dview=dview
+        )
+
+        print("making memmap")
+
+        Yr, dims, T = cm.load_memmap(fname_new)
+        images = np.reshape(Yr.T, [T] + list(dims), order="F")
+
+        proj_paths = dict()
+        for proj_type in ["mean", "std", "max"]:
+            p_img = getattr(np, f"nan{proj_type}")(images, axis=0)
+            proj_paths[proj_type] = output_dir.joinpath(
+                f"{uuid}_{proj_type}_projection.npy"
+            )
+            np.save(str(proj_paths[proj_type]), p_img)
+
+        # in fname new load in memmap order C
+        cm.stop_server(dview=dview)
+        c, dview, n_processes = cm.cluster.setup_cluster(
+            backend="local", n_processes=None, single_thread=False
+        )
+
+        print("performing CNMF")
+        cnm = cnmf.CNMF(n_processes, params=cnmf_params, dview=dview)
+
+        print("fitting images")
+        cnm = cnm.fit(images)
+        #
+        if "refit" in params.keys():
+            if params["refit"] is True:
+                print("refitting")
+                cnm = cnm.refit(images, dview=dview)
+
+        print("performing eval")
+        cnm.estimates.evaluate_components(images, cnm.params, dview=dview)
+
+        output_path = output_dir.joinpath(f"{uuid}.hdf5").resolve()
+
+        cnm.save(str(output_path))
+
+        Cn = cm.local_correlations(images.transpose(1, 2, 0))
+        Cn[np.isnan(Cn)] = 0
+
+        corr_img_path = output_dir.joinpath(f"{uuid}_cn.npy").resolve()
+        np.save(str(corr_img_path), Cn, allow_pickle=False)
+
+        # output dict for dataframe row (pd.Series)
+        d = dict()
+
+        cnmf_memmap_path = output_dir.joinpath(Path(fname_new).name)
+        if IS_WINDOWS:
+            Yr._mmap.close()  # accessing private attr but windows is annoying otherwise
+        move_file(fname_new, cnmf_memmap_path)
+
+        cnmf_hdf5_path = output_path.relative_to(output_dir.parent)
+        cnmf_memmap_path = cnmf_memmap_path.relative_to(output_dir.parent)
+        corr_img_path = corr_img_path.relative_to(output_dir.parent)
+        for proj_type in proj_paths.keys():
+            d[f"{proj_type}-projection-path"] = proj_paths[proj_type].relative_to(
+                output_dir.parent
             )
 
-        return func(instance, *args, **kwargs)
-    return __check
-
-
-@pd.api.extensions.register_series_accessor("cnmf")
-class CNMFExtensions:
-    """
-    Extensions for managing CNMF output data
-    """
-
-    def __init__(self, s: pd.Series):
-        self._series = s
-
-    @validate("cnmf")
-    def get_cnmf_memmap(self, mode: str = "r") -> np.ndarray:
-        """
-        Get the CNMF C-order memmap. This should NOT be used for viewing the
-        movie frames use ``caiman.get_input_movie()`` for that purpose.
-
-        Parameters
-        ----------
-
-        mode: str
-            passed to numpy.memmap
-
-            one of: `{'r+', 'r', 'w+', 'c'}`
-
-            The file is opened in this mode:
-
-            +------+-------------------------------------------------------------+
-            | 'r'  | Open existing file for reading only.                        |
-            +------+-------------------------------------------------------------+
-            | 'r+' | Open existing file for reading and writing.                 |
-            +------+-------------------------------------------------------------+
-            | 'w+' | Create or overwrite existing file for reading and writing.  |
-            +------+-------------------------------------------------------------+
-            | 'c'  | Copy-on-write: assignments affect data in memory, but       |
-            |      | changes are not saved to disk.  The file on disk is         |
-            |      | read-only.                                                  |
-            +------+-------------------------------------------------------------+
-
-        Returns
-        -------
-        np.ndarray
-            numpy memmap array used for CNMF
-        """
-
-        path = self._series.paths.resolve(self._series["outputs"]["cnmf-memmap-path"])
-        # Get order f images
-        Yr, dims, T = load_memmap(str(path), mode=mode)
-        images = np.reshape(Yr.T, [T] + list(dims), order="F")
-        return images
-
-    @validate("cnmf")
-    def get_output_path(self) -> Path:
-        """
-        Get the path to the cnmf hdf5 output file.
-
-        **Note:** You generally want to work with the other extensions instead of directly using the hdf5 file.
-
-        Returns
-        -------
-        Path
-            full path to the caiman-format CNMF hdf5 output file
-
-        """
-
-        return self._series.paths.resolve(self._series["outputs"]["cnmf-hdf5-path"])
-
-    @validate("cnmf")
-    @cnmf_cache.use_cache
-    def get_output(self, return_copy=True) -> CNMF:
-        """
-        Parameters
-        ----------
-        return_copy: bool
-            | if ``True`` returns a copy of the cached value in memory.
-            | if ``False`` returns the same object as the cached value in memory, not recommend this could result in strange unexpected behavior.
-            | In general you want a copy of the cached value.
-
-        Returns
-        -------
-        CNMF
-            Returns the Caiman CNMF object
-
-        Examples
-        --------
-
-        Load the CNMF model with estimates from the hdf5 file.
-
-        .. code-block:: python
-
-            from mesmerize_core import load_batch
-
-            df = load_batch("/path/to/batch_dataframe_file.pickle")
-
-            # assume the 0th index is a cnmf item
-            cnmf_obj = df.iloc[0].cnmf.get_output()
-
-            # see some estimates
-            print(cnmf_obj.estimates.C)
-            print(cnmf_obj.estimates.f)
-
-        """
-
-        # Need to create a cache object that takes the item's UUID and returns based on that
-        # collective global cache
-        return load_CNMF(self.get_output_path())
-
-    @validate("cnmf")
-    @_component_indices_parser
-    @cnmf_cache.use_cache
-    def get_masks(
-        self, component_indices: Union[np.ndarray, str] = None, threshold: float = 0.01, return_copy=True
-    ) -> np.ndarray:
-        """
-        | Get binary masks of the spatial components at the given ``component_indices``.
-        | Created from ``CNMF.estimates.A``
-
-        Parameters
-        ----------
-        component_indices: str or np.ndarray, optional
-            | indices of the components to include
-            | if not provided, ``None``, or ``"all"`` uses all components
-            | if ``"good"`` uses good components, i.e. ``Estimates.idx_components``
-            | if ``"bad"`` uses bad components, i.e. ``Estimates.idx_components_bad``
-            | if ``np.ndarray``, uses the indices in the provided array
-
-        threshold: float
-            threshold
-
-        return_copy: bool
-            | if ``True`` returns a copy of the cached value in memory.
-            | if ``False`` returns the same object as the cached value in memory, not recommend this could result in strange unexpected behavior.
-            | In general you want a copy of the cached value.
-
-        Returns
-        -------
-        np.ndarray
-            shape is [dim_0, dim_1, n_components]
-
-        """
-
-        cnmf_obj = self.get_output()
-
-        dims = cnmf_obj.dims
-        if dims is None:
-            dims = cnmf_obj.estimates.dims
-
-        masks = np.zeros(shape=(dims[0], dims[1], len(component_indices)), dtype=bool)
-
-        for n, ix in enumerate(component_indices):
-            s = cnmf_obj.estimates.A[:, ix].toarray().reshape(cnmf_obj.dims)
-            s[s >= threshold] = 1
-            s[s < threshold] = 0
-
-            masks[:, :, n] = s.astype(bool)
-
-        return masks
-
-    @staticmethod
-    def _get_spatial_contours(
-        cnmf_obj: CNMF, component_indices, swap_dim
-    ):
-
-        dims = cnmf_obj.dims
-        if dims is None:
-            # I think that one of these is `None` if loaded from an hdf5 file
-            dims = cnmf_obj.estimates.dims
-
-        # need to transpose these
-        if swap_dim:
-            dims = dims[1], dims[0]
-        else:
-            dims = dims[0], dims[1]
-
-        contours = caiman_get_contours(
-            cnmf_obj.estimates.A[:, component_indices], dims, swap_dim=swap_dim
+        d.update(
+            {
+                "cnmf-hdf5-path": cnmf_hdf5_path,
+                "cnmf-memmap-path": cnmf_memmap_path,
+                "corr-img-path": corr_img_path,
+                "success": True,
+                "traceback": None,
+            }
         )
 
-        return contours
+    except:
+        d = {"success": False, "traceback": traceback.format_exc()}
 
-    @validate("cnmf")
-    @_component_indices_parser
-    @cnmf_cache.use_cache
-    def get_contours(
-            self,
-            component_indices: Union[np.ndarray, str] = None,
-            swap_dim: bool = True,
-            return_copy=True
-    ) -> Tuple[List[np.ndarray], List[np.ndarray]]:
-        """
-        Get the contour and center of mass for each spatial footprint
+    cm.stop_server(dview=dview)
 
-        Parameters
-        ----------
-        component_indices: str or np.ndarray, optional
-            | indices of the components to include
-            | if not provided, ``None``, or ``"all"`` uses all components
-            | if ``"good"`` uses good components, i.e. ``Estimates.idx_components``
-            | if ``"bad"`` uses bad components, i.e. ``Estimates.idx_components_bad``
-            | if ``np.ndarray``, uses the indices in the provided array
+    # Add dictionary to output column of series
+    df.loc[df["uuid"] == uuid, "outputs"] = [d]
+    # Add ran timestamp to ran_time column of series
+    df.loc[df["uuid"] == uuid, "ran_time"] = datetime.now().isoformat(timespec="seconds", sep="T")
+    df.loc[df["uuid"] == uuid, "algo_duration"] = str(round(time.time() - algo_start, 2)) + " sec"
+    # save dataframe to disc
+    df.to_pickle(batch_path)
 
-        swap_dim: bool
-            swap the x and y coordinates, use if the contours don't align with the cells in your image
 
-        return_copy: bool
-            | if ``True`` returns a copy of the cached value in memory.
-            | if ``False`` returns the same object as the cached value in memory, not recommend this could result in strange unexpected behavior.
-            | In general you want a copy of the cached value.
+@click.command()
+@click.option("--batch-path", type=str)
+@click.option("--uuid", type=str)
+@click.option("--data-path")
+def main(batch_path, uuid, data_path: str = None):
+    run_algo(batch_path, uuid, data_path)
 
-        Returns
-        -------
-        Tuple[List[np.ndarray], List[np.ndarray]]
-            | (List[coordinates array], List[centers of masses array])
-            | each array of coordinates is 2D, [xs, ys]
-            | each center of mass is [x, y]
 
-        """
-
-        cnmf_obj = self.get_output()
-        contours = self._get_spatial_contours(cnmf_obj, component_indices, swap_dim)
-
-        coordinates = list()
-        coms = list()
-
-        for contour in contours:
-            coors = contour["coordinates"]
-            coors = coors[~np.isnan(coors).any(axis=1)]
-            coordinates.append(coors)
-
-            com = coors.mean(axis=0)
-            coms.append(com)
-
-        return coordinates, coms
-
-    @validate("cnmf")
-    @_component_indices_parser
-    @cnmf_cache.use_cache
-    def get_temporal(
-        self, component_indices: Union[np.ndarray, str] = None, add_background: bool = False, add_residuals: bool = False, return_copy=True
-    ) -> np.ndarray:
-        """
-        Get the temporal components for this CNMF item, basically ``CNMF.estimates.C``
-
-        Parameters
-        ----------
-        component_indices: str or np.ndarray, optional
-            | indices of the components to include
-            | if not provided, ``None``, or ``"all"`` uses all components
-            | if ``"good"`` uses good components, i.e. ``Estimates.idx_components``
-            | if ``"bad"`` uses bad components, i.e. ``Estimates.idx_components_bad``
-            | if ``np.ndarray``, uses the indices in the provided array
-
-        add_background: bool
-            if ``True``, add the temporal background, ``cnmf.estimates.C + cnmf.estimates.f``
-
-        add_residuals: bool, default False
-            if ``True``, add residuals, i.e. ``cnmf.estimates.YrA``
-        
-        return_copy: bool
-            | if ``True`` returns a copy of the cached value in memory.
-            | if ``False`` returns the same object as the cached value in memory, not recommend this could result in strange unexpected behavior.
-            | In general you want a copy of the cached value.
-
-        Returns
-        -------
-        np.ndarray
-            shape is [n_components, n_frames]
-
-        Examples
-        --------
-
-        Plot the temporal components as a heatmap
-
-        .. code-block:: python
-
-            from mesmerize_core import load_batch
-            from fastplotlib import Plot
-
-            df = load_batch("/path/to/batch_dataframe_file.pickle")
-
-            # assumes 0th index is a cnmf batch item
-            temporal = df.iloc[0].cnmf.get_temporal()
-
-            plot = Plot()
-
-            plot.add_line_collection(temporal)
-
-            plot.show()
-        """
-
-        cnmf_obj = self.get_output()
-
-        C = cnmf_obj.estimates.C[component_indices]
-        f = cnmf_obj.estimates.f
-        YrA = cnmf_obj.estimates.YrA[component_indices]
-
-        if add_background:
-            return C + f
-        elif add_residuals:
-            return C + YrA
-        else:
-            return C
-
-    @validate("cnmf")
-    @_component_indices_parser
-    @cnmf_cache.use_cache
-    def get_rcm(
-            self,
-            component_indices: Union[np.ndarray, str] = None,
-            temporal_components: np.ndarray = None,
-            return_copy=False
-    ) -> LazyArrayRCM:
-        """
-        Return the reconstructed movie with no background, i.e. ``A ⊗ C``, as a ``LazyArray``.
-        This is an array that performs lazy computation of the reconstructed movie only upon indexing.
-
-        Parameters
-        ----------
-        component_indices: optional, Union[np.ndarray, str]
-            | indices of the components to include
-            | if ``np.ndarray``, uses these indices in the provided array
-            | if ``"good"`` uses good components, i.e. cnmf.estimates.idx_components
-            | if ``"bad"`` uses bad components, i.e. cnmf.estimates.idx_components_bad
-            | if not provided, ``None``, or ``"all"`` uses all components
-
-        temporal_components: optional, np.ndarray
-            temporal components to use as ``C`` for computing reconstructed movie.
-
-            | uses ``cnmf.estimates.C`` if not provided
-            | useful if you want to create the reconstructed movie using dF/Fo, z-scored data, etc.
-
-        return_copy: bool, default ``False``
-            | if ``True`` returns a copy of the cached value in memory.
-            | if ``False`` returns the same object as the cached value in memory
-            | ``False`` is used by default when returning ``LazyArrays`` for technical reasons
-
-        Returns
-        -------
-        LazyArrayRCM
-            shape is [n_frames, x_dims, y_dims]
-
-        Examples
-        --------
-
-        This example uses fastplotlib to display the reconstructed movie from a CNMF item that has already been run.
-
-        | **fastplotlib code must be run in a notebook**
-
-        | See the demo notebooks for more detailed examples.
-
-        .. code-block:: python
-
-            from mesmerize_core import *
-            from fastplotlib.widgets import ImageWidget
-
-            # load existing batch
-            df = load_batch("/path/to/batch.pickle")
-
-            # get the reconstructed movie as LazyArray
-            # assumes the last index, `-1`, is a cnmf item
-            # uses only the "good" components
-            rcm = df.iloc[-1].cnmf.get_rcm(component_indices="good")
-
-            # view with ImageWidget
-            iw = ImageWidget(data=rcm)
-            iw.show()
-        """
-
-        cnmf_obj = self.get_output()
-
-        if temporal_components is None:
-            temporal_components = cnmf_obj.estimates.C
-
-        else:  # number of spatial components must equal number of temporal components
-            if cnmf_obj.estimates.A.shape[1] != temporal_components.shape[0]:
-                raise ValueError(
-                    f"Number of temporal components provided: `{temporal_components.shape[0]}` "
-                    f"does not equal number of spatial components provided: `{cnmf_obj.estimates.A.shape[1]}`"
-                )
-
-        if cnmf_obj.estimates.dims is not None:
-            dims = cnmf_obj.estimates.dims
-        elif cnmf_obj.dims is not None:
-            dims = cnmf_obj.dims
-        else:
-            raise AttributeError(f"`dims` not found in the CNMF data, it is usually found in one of the following:\n"
-                                 f"`cnmf_obj.estimates.dims` or `cnmf_obj.dims`")
-
-        spatial = cnmf_obj.estimates.A[:, component_indices]
-        temporal = temporal_components[component_indices, :]
-
-        return LazyArrayRCM(spatial=spatial, temporal=temporal, frame_dims=dims)
-
-    @validate("cnmf")
-    @cnmf_cache.use_cache
-    def get_rcb(self,) -> LazyArrayRCB:
-        """
-        Return the reconstructed background, ``(b ⊗ f)``
-
-        Returns
-        -------
-        LazyArrayRCB
-            shape is [n_frames, x_dims, y_dims]
-
-        Examples
-        --------
-
-        This example uses fastplotlib to display the reconstructed movie from a CNMF item that has already been run.
-
-        | **fastplotlib code must be run in a notebook**
-
-        | See the demo notebooks for more detailed examples.
-
-        .. code-block:: python
-
-            from mesmerize_core import *
-            from fastplotlib.widgets import ImageWidget
-
-            # load existing batch
-            df = load_batch("/path/to/batch.pickle")
-
-            # get the reconstructed background as a LazyArray
-            # assumes the last index, `-1`, is a cnmf item
-            rcb = df.iloc[-1].cnmf.get_rcb()
-
-            # view with ImageWidget
-            iw = ImageWidget(data=rcb)
-            iw.show()
-        """
-
-        cnmf_obj = self.get_output()
-
-        if cnmf_obj.estimates.dims is not None:
-            dims = cnmf_obj.estimates.dims
-        elif cnmf_obj.dims is not None:
-            dims = cnmf_obj.dims
-        else:
-            raise AttributeError(f"`dims` not found in the CNMF data, it is usually found in one of the following:\n"
-                                 f"`cnmf_obj.estimates.dims` or `cnmf_obj.dims`")
-
-        spatial = cnmf_obj.estimates.b
-        temporal = cnmf_obj.estimates.f
-
-        return LazyArrayRCB(spatial=spatial, temporal=temporal, frame_dims=dims)
-
-    @validate("cnmf")
-    @cnmf_cache.use_cache
-    def get_residuals(self) -> LazyArrayResiduals:
-        """
-        Return residuals, ``Y - (A ⊗ C) - (b ⊗ f)``
-
-        Returns
-        -------
-        LazyArrayResiduals
-            shape is [n_frames, x_dims, y_dims]
-
-        Examples
-        --------
-
-        This example uses fastplotlib to display the reconstructed movie from a CNMF item that has already been run.
-
-        | **fastplotlib code must be run in a notebook**
-
-        | See the demo notebooks for more detailed examples.
-
-        .. code-block:: python
-
-            from mesmerize_core import *
-            from fastplotlib.widgets import ImageWidget
-
-            # load existing batch
-            df = load_batch("/path/to/batch.pickle")
-
-            # get the reconstructed background as a LazyArray
-            # assumes the last index, `-1`, is a cnmf item
-            residuals = df.iloc[-1].cnmf.get_residuals()
-
-            # view with ImageWidget
-            iw = ImageWidget(data=residuals)
-            iw.show()
-        """
-
-        residuals = LazyArrayResiduals(
-            self._series.caiman.get_input_movie(),
-            self.get_rcm(),
-            self.get_rcb(),
-        )
-
-        return residuals
-
-    @validate("cnmf")
-    @_check_permissions
-    @cnmf_cache.invalidate()
-    def run_detrend_dfof(
-            self,
-            quantileMin: float = 8,
-            frames_window: int = 500,
-            flag_auto: bool = True,
-            use_fast: bool = False,
-            use_residuals: bool = True,
-            detrend_only: bool = False
-    ) -> None:
-        """
-        | Uses caiman's detrend_df_f.
-        | call ``CNMF.get_detrend_dfof()`` to get the values.
-        | Sets ``CNMF.estimates.F_dff``
-
-        Warnings
-        --------
-        Overwrites the existing cnmf hdf5 output file for this batch item
-
-        Parameters
-        ----------
-        quantileMin: float
-            quantile used to estimate the baseline (values in [0,100])
-            used only if 'flag_auto' is False, i.e. ignored by default
-
-        frames_window: int
-            number of frames for computing running quantile
-
-        flag_auto: bool
-            flag for determining quantile automatically
-
-        use_fast: bool
-            flag for using approximate fast percentile filtering
-
-        detrend_only: bool
-            flag for only subtracting baseline and not normalizing by it.
-            Used in 1p data processing where baseline fluorescence cannot be
-            determined.
-
-        Returns
-        -------
-        None
-
-        Notes
-        ------
-        invalidates the cache for this batch item.
-
-        """
-
-        cnmf_obj: CNMF = self.get_output()
-        cnmf_obj.estimates.detrend_df_f(
-            quantileMin=quantileMin,
-            frames_window=frames_window,
-            flag_auto=flag_auto,
-            use_fast=use_fast,
-            use_residuals=use_residuals,
-            detrend_only=detrend_only
-        )
-
-        # remove current hdf5 file
-        cnmf_obj_path = self.get_output_path()
-        cnmf_obj_path.unlink()
-
-        # save new hdf5 file with new F_dff vals
-        cnmf_obj.save(str(cnmf_obj_path))
-
-    @validate("cnmf")
-    @_component_indices_parser
-    @cnmf_cache.use_cache
-    def get_detrend_dfof(
-            self,
-            component_indices: Union[np.ndarray, str] = None,
-            return_copy: bool = True
-    ):
-        """
-        Get the detrended dF/F0 curves after calling ``run_detrend_dfof``.
-        Basically ``CNMF.estimates.F_dff``.
-
-        Parameters
-        ----------
-        component_indices: str or np.ndarray, optional
-            | indices of the components to include
-            | if not provided, ``None``, or ``"all"`` uses all components
-            | if ``"good"`` uses good components, i.e. ``Estimates.idx_components``
-            | if ``"bad"`` uses bad components, i.e. ``Estimates.idx_components_bad``
-            | if ``np.ndarray``, uses the indices in the provided array
-
-        return_copy: bool
-            | if ``True`` returns a copy of the cached value in memory.
-            | if ``False`` returns the same object as the cached value in memory, not recommend this could result in strange unexpected behavior.
-            | In general you want a copy of the cached value.
-
-        Returns
-        -------
-        np.ndarray
-            shape is [n_components, n_frames]
-
-        """
-
-        cnmf_obj = self.get_output()
-        if cnmf_obj.estimates.F_dff is None:
-            raise AttributeError("You must run ``cnmf.run_detrend_dfof()`` first")
-
-        return cnmf_obj.estimates.F_dff[component_indices]
-
-    @validate("cnmf")
-    @_check_permissions
-    @cnmf_cache.invalidate()
-    def run_eval(self, params: dict) -> None:
-        """
-        Run component evaluation. This basically changes the indices for good and bad components.
-
-        Warnings
-        --------
-        Overwrites the existing cnmf hdf5 output file for this batch item
-
-        Parameters
-        ----------
-        params: dict
-            dict of parameters for component evaluation
-
-            ==============  =================
-            parameter       details
-            ==============  =================
-            SNR_lowest      ``float``, minimum accepted SNR value
-            cnn_lowest      ``float``, minimum accepted value for CNN classifier
-            gSig_range      ``List[int, int]`` or ``None``, range for gSig scale for CNN classifier
-            min_SNR         ``float``, transient SNR threshold
-            min_cnn_thr     ``float``, threshold for CNN classifier
-            rval_lowest     ``float``, minimum accepted space correlation
-            rval_thr        ``float``, space correlation threshold
-            use_cnn         ``bool``, use CNN based classifier
-            use_ecc         ``bool``, flag for eccentricity based filtering
-            max_ecc         ``float``, max eccentricity
-            ==============  =================
-
-        Returns
-        -------
-        None
-
-        Notes
-        ------
-        invalidates the cache for this batch item.
-
-        """
-
-        cnmf_obj = self.get_output()
-
-        valid = list(cnmf_obj.params.quality.keys())
-        for k in params.keys():
-            if k not in valid:
-                raise KeyError(
-                    f"passed params dict key `{k}` is not a valid parameter for quality evaluation\n"
-                    f"valid param keys are: {valid}"
-                )
-
-        cnmf_obj.params.quality.update(params)
-        cnmf_obj.estimates.filter_components(
-            imgs=self._series.caiman.get_input_movie(),
-            params=cnmf_obj.params
-        )
-
-        cnmf_obj_path = self.get_output_path()
-        cnmf_obj_path.unlink()
-
-        cnmf_obj.save(str(cnmf_obj_path))
-        self._series["params"]["eval"] = deepcopy(params)
-
-    @validate("cnmf")
-    def get_good_components(self) -> np.ndarray:
-        """
-        get the good component indices, ``Estimates.idx_components``
-
-        Returns
-        -------
-        np.ndarray
-            array of ints, indices of good components
-
-        """
-
-        cnmf_obj = self.get_output()
-        return cnmf_obj.estimates.idx_components
-
-    @validate("cnmf")
-    def get_bad_components(self) -> np.ndarray:
-        """
-        get the bad component indices, ``Estimates.idx_components_bad``
-
-        Returns
-        -------
-        np.ndarray
-            array of ints, indices of bad components
-
-        """
-
-        cnmf_obj = self.get_output()
-        return cnmf_obj.estimates.idx_components_bad
+if __name__ == "__main__":
+    main()
