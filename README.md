@@ -85,7 +85,13 @@ Enter the following commands into the Terminal on Mac.
     print(mesmerize_core.__version__)  # should be 0.2.2
     ```
 
-13. Finally, there are some bugs in these specific versions of `caiman` and `mesmerize-core`. They are fixed in later versions, but these versions also make the code incompatible. Therefore, we will manually fix this problem by replacing some of the `.py` files in these packages with the ones in the `caImageAnalysis` repository. 
+13. Find where the `caimanmanager.py` file is located on the computer and `cd` into that folder. Then run:
+
+    ```bash
+    caimanmanager.py install
+    ```
+
+14. Finally, there are some bugs in these specific versions of `caiman` and `mesmerize-core`. They are fixed in later versions, but these versions also make the code incompatible. Therefore, we will manually fix this problem by replacing some of the `.py` files in these packages with the ones in the `caImageAnalysis` repository. 
 
 Replace the `~/.local/share/mamba/envs/mescore/lib/python3.10/site-packages/caiman/source_extraction/cnmf/estimates.py` file with the `~/caImageAnalysis/caImageAnalysis/replace/caiman/estimates.py` file.
 
