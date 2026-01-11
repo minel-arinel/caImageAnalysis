@@ -1,4 +1,5 @@
 from kneed import KneeLocator
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.ndimage import gaussian_filter1d
@@ -6,22 +7,202 @@ from scipy.stats import sem
 import seaborn as sns
 
 from caImageAnalysis.sliceTCA import get_classified_neurons
-from caImageAnalysis.temporal_new import get_traces
+from caImageAnalysis.temporal_new import get_traces, get_traces_matrix_first_n_pulses
 from caImageAnalysis.utils import sort_by_peak, sort_by_peak_with_indices
 
 
+def get_traces_matrix(df, pre_frame_num: int, post_frame_num: int, key: str, n_pulses: int = 5):
+    """
+    Generate a matrix of traces for visualization or analysis.
+    This function processes the input data to extract and reshape traces into a matrix
+    suitable for further analysis or visualization, such as heatmaps. It ensures that
+    the traces are normalized and grouped into a specified number of pulses.
+    Parameters:
+        df (pd.DataFrame): The input dataframe containing the data to extract traces from.
+        pre_frame_num (int): The number of frames to include before the event of interest.
+        post_frame_num (int): The number of frames to include after the event of interest.
+        key (str): The key used to identify the relevant data in the dataframe.
+        n_pulses (int, optional): The number of pulses to group the traces into. Defaults to 5.
+    Returns:
+        tuple:
+            - x (np.ndarray): The x-axis values corresponding to the traces.
+            - traces_matrix (np.ndarray): A 3D array of shape (num_rows, n_pulses, trace_length),
+              where `num_rows` is the number of groups of traces, `n_pulses` is the number of
+              pulses per group, and `trace_length` is the length of each trace.
+    Raises:
+        ValueError: If no traces are found in the input dataframe.
+    Notes:
+        - The traces are normalized as global dF/F and reshaped into a matrix
+          based on the specified number of pulses.
+    """
+    x, traces = get_traces(
+        df,
+        pre_frame_num=pre_frame_num,
+        post_frame_num=post_frame_num,
+        key=key,
+        only_responsive=False,
+        normalize_by_first=True,
+    )
+    traces = np.asarray(traces)
+
+    if traces.size == 0:
+        raise ValueError(f"No traces found for heatmap (df rows={len(df)}).")
+
+    num_rows = len(traces) // n_pulses
+    traces = traces[: num_rows * n_pulses]
+    traces_matrix = traces.reshape(num_rows, n_pulses, -1)
+    return x, traces_matrix
+
+
+def plot_peristim_heatmaps_across_pulses(
+	df,
+	region: str,
+	pre_frame_num: int = 15,
+	post_frame_num: int = 39,
+	key: str = "raw_norm_temporal",
+    fps: float = 1.3039181000348583,
+	sigma: float = 1,
+	vmin: float = -0.75,
+	vmax: float = 1.5,
+	n_sort_frames: int = 5,
+	n_pulses: int = 5,
+	ticks_in_s=(0, 30),
+	cmap: str = "RdBu_r",
+	stim_line_color: str = "k",
+	save_path: str | None = None,
+):
+    """
+    Plots peristimulus heatmaps across multiple pulses for a given region in the tank data.
+
+    This function generates heatmaps of neural activity aligned to stimulus onset across 
+    multiple pulses. The heatmaps are sorted based on the mean activity in a specified 
+    time window and smoothed using a Gaussian filter if specified.
+
+    Parameters:
+        df: pd.DataFrame
+            The dataframe containing the data to be visualized.
+        region (str): 
+            The region to filter the neurons by.
+        pre_frame_num (int, optional): 
+            Number of frames to include before the stimulus onset. Defaults to 15.
+        post_frame_num (int, optional): 
+            Number of frames to include after the stimulus onset. Defaults to 39.
+        key (str, optional): 
+            The key to access the specific data type in the tank. Defaults to "raw_norm_temporal".
+        fps (float, optional):
+            Frames per second of the data. Defaults to 1.3039181000348583.
+        sigma (float, optional): 
+            Standard deviation for Gaussian smoothing. If 0 or None, no smoothing is applied. Defaults to 1.
+        vmin (float, optional): 
+            Minimum value for the colormap normalization. Defaults to -0.75.
+        vmax (float, optional): 
+            Maximum value for the colormap normalization. Defaults to 1.5.
+        n_sort_frames (int, optional): 
+            Number of frames used to sort the traces. Defaults to 5.
+        n_pulses (int, optional): 
+            Number of pulses to include in the heatmaps. Defaults to 5.
+        ticks_in_s (tuple, optional): 
+            Time points (in seconds) to display as ticks on the x-axis. Defaults to (0, 30).
+        cmap (str, optional): 
+            Colormap to use for the heatmaps. Defaults to "RdBu_r".
+        stim_line_color (str, optional): 
+            Color of the vertical line indicating stimulus onset. Defaults to "k".
+        save_path (str | None, optional): 
+            Path to save the generated heatmap figure. If None, the figure is not saved. Defaults to None.
+
+    Returns:
+        tuple: A tuple containing:
+            - x (np.ndarray): The x-axis values for the heatmaps.
+            - traces_matrix (np.ndarray): The matrix of traces used to generate the heatmaps.
+            - sort_inds (np.ndarray): The indices used to sort the traces.
+            - fig (matplotlib.figure.Figure): The generated figure object.
+            - ax (np.ndarray): The array of axes objects for the subplots.
+
+    Notes:
+        - The function uses a TwoSlopeNorm colormap normalization to center the colormap at 0.
+        - The heatmaps are sorted based on the mean activity in the first pulse's specified 
+          sorting window.
+    """
+    x, traces_matrix = get_traces_matrix_first_n_pulses(
+        df,
+        pre_frame_num=pre_frame_num,
+        post_frame_num=post_frame_num,
+        key="raw_norm_temporal",
+        pulse_key="pulse_frames",
+        n_pulses=4,
+        normalize_by_first=True,
+    )
+
+    fig, ax = plt.subplots(1, n_pulses, figsize=(10, 4))
+    norm = mcolors.TwoSlopeNorm(vmin=vmin, vcenter=0, vmax=vmax)
+
+    sort_inds = None
+    ticks_in_s = np.asarray(ticks_in_s)
+    ticks_in_frames = ticks_in_s * fps + pre_frame_num
+
+    for pulse in range(n_pulses):
+        data = traces_matrix[:, pulse, :]
+        if sigma and sigma > 0:
+            data = np.apply_along_axis(lambda t: gaussian_filter1d(t, sigma=sigma), axis=1, arr=data)
+
+        if pulse == 0:
+            sort_inds = np.argsort(
+                np.mean(data[:, pre_frame_num + 1 : pre_frame_num + 1 + n_sort_frames], axis=1)
+            )[::-1]
+
+        plot_data = np.vstack(data[sort_inds])
+
+        ax[pulse].imshow(plot_data, cmap=cmap, interpolation="nearest", aspect="auto", norm=norm)
+        ax[pulse].set_xticks(ticks_in_frames)
+        ax[pulse].set_xticklabels(ticks_in_s)
+        ax[pulse].vlines(pre_frame_num, -0.5, len(data) - 0.5, color=stim_line_color, lw=3)
+        ax[pulse].grid(visible=False)
+        ax[pulse].spines["top"].set_visible(False)
+        ax[pulse].spines["right"].set_visible(False)
+        ax[pulse].spines["left"].set_visible(False)
+        ax[pulse].spines["bottom"].set_visible(False)
+
+        if pulse != 0:
+            ax[pulse].set_yticks([])
+        else:
+            ax[pulse].set_yticks([0, plot_data.shape[0] - 1])
+            ax[pulse].set_yticklabels([1, plot_data.shape[0]])
+
+    cbar = fig.colorbar(ax[-1].images[0], ax=ax, orientation="vertical", pad=0.02)
+    cbar.outline.set_visible(False)
+    cbar.set_ticks([vmin, 0, vmax])
+    cbar.set_ticklabels([f"{vmin:.2f}", "0", f"{vmax:.2f}"])
+
+    if save_path:
+        plt.savefig(save_path.joinpath(f"{region}_peristim_heatmaps.pdf"), transparent=True)
+
+    return x, traces_matrix, sort_inds, fig, ax
+
+
 def plot_heatmap(data, sort=True, fps=1.3039181000348583, pulses=[391, 548, 704, 861, 1017], 
-                 tick_interval=60):
-    '''Plots a heatmap of temporal data.
-    tick_interval: interval between x-axis ticks in seconds'''
-    fig = plt.figure(figsize=(20, 15))
+                 tick_interval=60, figsize=(20, 15), cmap='inferno', **kwargs):
+    """
+    Plot a heatmap of temporal data.
+    Parameters:
+        data (array-like or list): 2D array-like with shape (n_neurons, n_timepoints)
+            or a list of 1D traces. If a list is provided it will be stacked with np.vstack.
+        sort (bool): If True, rows are sorted by peak time using sort_by_peak(). Default True.
+        fps (float): Frames per second used to convert frame indices to seconds for x-axis labels.
+        pulses (list[int]): Frame indices where stimulus pulses occur; vertical lines are drawn at these frames.
+        tick_interval (int | float): Interval between x-axis ticks in seconds (not frames). Default 60.
+    Returns:
+        None. Displays a matplotlib heatmap on the current axes.
+    Notes:
+        - X-axis tick labels are shown in seconds (rounded) computed as frame_index / fps.
+    """
+    fig = plt.figure(figsize=figsize)
     
     if sort:
         data = sort_by_peak(np.vstack(data))
     else:
         data = np.vstack(data)
 
-    plt.imshow(data, cmap='inferno', interpolation='nearest', aspect='auto')
+    plt.imshow(data, cmap=cmap, interpolation='nearest', aspect='auto', **kwargs)
     
     duration_in_mins = round(len(data[0])/fps/60)
     ticks = np.arange(0, (duration_in_mins+1)*60*fps, tick_interval*fps)
@@ -781,6 +962,7 @@ def plot_sliceTCA_colorbar(model, sorting_indices, i=0, j=0, k=0, quantile=0.99,
         cax=ax, **kwargs
     )
     cb.set_label('Component Value')
+    cb.outline.set_visible(False)  # Remove the border around the colorbar
 
     if save_path:
         if i == 0:

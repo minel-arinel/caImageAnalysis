@@ -627,6 +627,69 @@ def get_traces(df, pre_frame_num=15, post_frame_num=13, normalize=False,
         return x, traces
     
 
+def get_traces_matrix_first_n_pulses(
+    df,
+    pre_frame_num,
+    post_frame_num,
+    key="raw_norm_temporal",
+    pulse_key="pulse_frames",
+    n_pulses=4,
+    normalize_by_first=True,
+):
+    """
+    Build a strict (n_neurons, n_pulses, T) traces matrix without reshaping a flat list.
+    Uses the first n_pulses pulses for each neuron.
+    Skips neurons that don't have >= n_pulses pulses or have out-of-bounds windows.
+    """
+    T = pre_frame_num + post_frame_num + 1
+    x = np.arange(-pre_frame_num, post_frame_num + 1)
+
+    traces_matrix = []
+
+    for _, neuron in df.iterrows():
+        pulses = neuron[pulse_key]
+
+        if pulses is None or len(pulses) < n_pulses:
+            continue
+
+        pulses = pulses[:n_pulses]
+        raw = np.asarray(neuron[key])
+        L = len(raw)
+
+        # bounds check for all selected pulses
+        if any((p - pre_frame_num < 0) or (p + post_frame_num >= L) for p in pulses):
+            continue
+
+        per_pulse = []
+        baseline = None
+
+        for i, p in enumerate(pulses):
+            start = p - pre_frame_num
+            stop = p + post_frame_num
+            tr = raw[start:stop + 1]
+
+            if len(tr) != T:
+                per_pulse = None
+                break
+
+            if normalize_by_first:
+                if i == 0:
+                    baseline = np.median(raw[start:p])
+                tr = (tr - baseline) / baseline
+
+            per_pulse.append(tr)
+
+        if per_pulse is None:
+            continue
+
+        traces_matrix.append(per_pulse)
+
+    if len(traces_matrix) == 0:
+        raise ValueError("No neurons left after filtering for first n pulses + bounds.")
+
+    return x, np.asarray(traces_matrix)
+    
+
 def calculate_time_at_half_maximum(x, trace, suppressed=False, fps=1, frame_interval=list()):
     """
     Returns the time at half maximum of the given trace.
