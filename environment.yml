@@ -373,7 +373,7 @@ dependencies:
       - slicetca==1.0.4
       - sympy==1.13.3
       - tenacity==8.3.0
-      - tensortools==0.3
+      - tensortools==0.4
       - torch==2.4.1
       - torchaudio==2.4.1
       - torchsde==0.2.6
