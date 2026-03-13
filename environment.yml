@@ -386,3 +386,6 @@ dependencies:
       - wgpu==0.8.4
       - widgetsnbextension==3.6.5
       - yellowbrick==1.5
+      - pingouin
+      - pymannkendall
+      - scikit-posthocs

@@ -1,6 +1,7 @@
 from copy import deepcopy
 from itertools import product
 from math import ceil
+import re
 import matplotlib.pyplot as plt
 from mesmerize_core import *
 import numpy as np
@@ -250,6 +251,40 @@ def uuid_to_plane(df):
     return df
 
 
+def sort_mesmerize_by_plane_and_save(fish, save=False):
+    """
+    Load batch, reorder so mcorr and cnmf rows are in plane order (img_stack_0, 1, ...).
+    Other algos stay at the top in original order. If save=True, write back to batch.pickle.
+    Returns the sorted DataFrame.
+    """
+    df = uuid_to_plane(load_mesmerize(fish))
+    uuid_to_plane_map = {}
+    for _, r in df.iterrows():
+        m = re.search(r'img_stack_(\d+)', str(r.get('item_name', '')), re.I)
+        if m:
+            uuid_to_plane_map[r['uuid']] = int(m.group(1))
+
+    def plane_num(r):
+        m = re.search(r'img_stack_(\d+)', str(r.get('item_name', '')), re.I)
+        if m:
+            return int(m.group(1))
+        m = re.search(r'img_stack_(\d+)', str(r.get('input_movie_path', '')), re.I)
+        if m:
+            return int(m.group(1))
+        return uuid_to_plane_map.get(r['item_name'], uuid_to_plane_map.get(r['uuid'], -1))
+
+    out = df.copy()
+    out['_ao'] = out['algo'].map({'mcorr': 1, 'cnmf': 2}).fillna(0).astype(int)
+    out['_orig'] = np.arange(len(out))
+    out['_p'] = out.apply(plane_num, axis=1)
+    out = out.sort_values(['_ao', '_p', '_orig']).drop(columns=['_ao', '_p', '_orig']).reset_index(drop=True)
+    if save:
+        set_parent_raw_data_path(fish.exp_path)
+        batch_path = get_parent_raw_data_path().joinpath("mesmerize-batch/batch.pickle")
+        out.to_pickle(batch_path)
+    return out
+
+
 def clean_mesmerize(df, keep_rows, keep_algo=None):
     '''Removes rows from mesmerize dataframe except the row indices in keep_rows'''
     if not isinstance(keep_rows, list):
@@ -437,7 +472,7 @@ def comp_eval2(fish, row, xy_cutoff=25, t_cutoff=100, dist_cutoff=5, intermediat
 
 def compeval2_volume(fish, xy_cutoff=25, t_cutoff=100, dist_cutoff=5):
     '''Runs compeval2 on the entire volume with given parameters'''
-    mes_df = uuid_to_plane(load_mesmerize(fish))
+    mes_df = sort_mesmerize_by_plane_and_save(fish)
     cnmf_df = mes_df[mes_df.algo == 'cnmf']
 
     final_rois = dict()
@@ -451,15 +486,18 @@ def compeval2_volume(fish, xy_cutoff=25, t_cutoff=100, dist_cutoff=5):
 
 def remove_xy(fish, indices=None, xy_cutoff=25):
     '''Removes components with a com within the cutoff from each side'''
-    mes_df = uuid_to_plane(load_mesmerize(fish))
+    mes_df = sort_mesmerize_by_plane_and_save(fish)
     cnmf_df = mes_df[mes_df.algo == 'cnmf'].reset_index()
 
     good_rois = dict()
 
-    fig = plt.figure(figsize=(10, 20), constrained_layout=True)
+    row_h = max(4, 3.5 * len(cnmf_df))
+    fig = plt.figure(figsize=(12, row_h), constrained_layout=True)
+    fig.suptitle(Path(fish.exp_path).name, fontsize=14)
     gs = fig.add_gridspec(len(cnmf_df), 2)
     axs = gs.subplots()
-    
+    scatter_s = 4
+
     for i, row in cnmf_df.iterrows():
         movie = row.caiman.get_input_movie()
         t, y, x = movie.shape
@@ -467,11 +505,9 @@ def remove_xy(fish, indices=None, xy_cutoff=25):
         if len(cnmf_df) > 1:
             axs[i, 0].imshow(movie[0])
             axs[i, 1].imshow(movie[0])
-            axs[i, 0].set_title(f'{row.item_name}: Before')
         else:
             axs[0].imshow(movie[0])
             axs[1].imshow(movie[0])
-            axs[0].set_title(f'{row.item_name}: Before')
 
         _, coms = row.cnmf.get_contours('good', swap_dim=False)
         coms = np.array(coms)
@@ -481,37 +517,42 @@ def remove_xy(fish, indices=None, xy_cutoff=25):
         else:
             ixs = indices[row.item_name]
 
+        if len(cnmf_df) > 1:
+            axs[i, 0].set_title(f'{row.item_name}: Before\n(n={len(ixs)})')
+        else:
+            axs[0].set_title(f'{row.item_name}: Before\n(n={len(ixs)})')
+
         _ixs = []
 
         for ix in ixs:
             com = coms[ix]
 
             if len(cnmf_df) > 1:
-                axs[i, 0].scatter(com[0], com[1])
+                axs[i, 0].scatter(com[0], com[1], s=scatter_s)
             else:
-                axs[0].scatter(com[0], com[1])
+                axs[0].scatter(com[0], com[1], s=scatter_s)
 
             if com[0] >= xy_cutoff and com[1] >= xy_cutoff:
                 if com[0] < x-xy_cutoff and com[1] < y-xy_cutoff:
                     _ixs.append(ix)
                     
                     if len(cnmf_df) > 1:
-                        axs[i, 1].scatter(com[0], com[1])
+                        axs[i, 1].scatter(com[0], com[1], s=scatter_s)
                     else:
-                        axs[1].scatter(com[0], com[1])
+                        axs[1].scatter(com[0], com[1], s=scatter_s)
                     
         if len(cnmf_df) > 1:
             axs[i, 0].set_xlim([0, x])
             axs[i, 0].set_ylim([y, 0])
             axs[i, 1].set_xlim([0, x])
             axs[i, 1].set_ylim([y, 0])
-            axs[i, 1].set_title(f'{row.item_name}: After xy_cutoff')
+            axs[i, 1].set_title(f'{row.item_name}: After xy_cutoff\n(n={len(_ixs)})')
         else:
             axs[0].set_xlim([0, x])
             axs[0].set_ylim([y, 0])
             axs[1].set_xlim([0, x])
             axs[1].set_ylim([y, 0])
-            axs[1].set_title(f'{row.item_name}: After xy_cutoff')
+            axs[1].set_title(f'{row.item_name}: After xy_cutoff\n(n={len(_ixs)})')
 
         good_rois[row.item_name] = np.array(_ixs)
     plt.show()
@@ -525,14 +566,17 @@ def remove_xy(fish, indices=None, xy_cutoff=25):
 
 def remove_low_t(fish, indices=None, peak_cutoff=100):
     '''Removes components with a max temporal peak less than the cutoff'''
-    mes_df = uuid_to_plane(load_mesmerize(fish))
+    mes_df = sort_mesmerize_by_plane_and_save(fish)
     cnmf_df = mes_df[mes_df.algo == 'cnmf'].reset_index()
 
     good_rois = dict()
 
-    fig = plt.figure(figsize=(10, 20), constrained_layout=True)
+    row_h = max(4, 3.5 * len(cnmf_df))
+    fig = plt.figure(figsize=(12, row_h), constrained_layout=True)
+    fig.suptitle(Path(fish.exp_path).name, fontsize=14)
     gs = fig.add_gridspec(len(cnmf_df), 2)
     axs = gs.subplots()
+    scatter_s = 4
 
     for i, row in cnmf_df.iterrows():
         movie = row.caiman.get_input_movie()
@@ -541,11 +585,9 @@ def remove_low_t(fish, indices=None, peak_cutoff=100):
         if len(cnmf_df) > 1:
             axs[i, 0].imshow(movie[0])
             axs[i, 1].imshow(movie[0])
-            axs[i, 0].set_title(f'{row.item_name}: Before')
         else:
             axs[0].imshow(movie[0])
             axs[1].imshow(movie[0])
-            axs[0].set_title(f'{row.item_name}: Before')
         
         _, coms = row.cnmf.get_contours('good', swap_dim=False)
         coms = np.array(coms)
@@ -556,36 +598,41 @@ def remove_low_t(fish, indices=None, peak_cutoff=100):
         else:
             ixs = indices[row.item_name]
 
+        if len(cnmf_df) > 1:
+            axs[i, 0].set_title(f'{row.item_name}: Before\n(n={len(ixs)})')
+        else:
+            axs[0].set_title(f'{row.item_name}: Before\n(n={len(ixs)})')
+
         _ixs = []
 
         for ix in ixs:
             com = coms[ix]
 
             if len(cnmf_df) > 1:
-                axs[i, 0].scatter(com[0], com[1])
+                axs[i, 0].scatter(com[0], com[1], s=scatter_s)
             else:
-                axs[0].scatter(com[0], com[1])
+                axs[0].scatter(com[0], com[1], s=scatter_s)
             
             if temporal[ix].max() > peak_cutoff:
                 _ixs.append(ix)
 
                 if len(cnmf_df) > 1:
-                    axs[i, 1].scatter(com[0], com[1])
+                    axs[i, 1].scatter(com[0], com[1], s=scatter_s)
                 else:
-                    axs[1].scatter(com[0], com[1])
+                    axs[1].scatter(com[0], com[1], s=scatter_s)
 
         if len(cnmf_df) > 1:
             axs[i, 0].set_xlim([0, x])
             axs[i, 0].set_ylim([y, 0])
             axs[i, 1].set_xlim([0, x])
             axs[i, 1].set_ylim([y, 0])
-            axs[i, 1].set_title(f'{row.item_name}: After peak_cutoff')
+            axs[i, 1].set_title(f'{row.item_name}: After peak_cutoff\n(n={len(_ixs)})')
         else:
             axs[0].set_xlim([0, x])
             axs[0].set_ylim([y, 0])
             axs[1].set_xlim([0, x])
             axs[1].set_ylim([y, 0])
-            axs[1].set_title(f'{row.item_name}: After peak_cutoff')
+            axs[1].set_title(f'{row.item_name}: After peak_cutoff\n(n={len(_ixs)})')
         
         good_rois[row.item_name] = np.array(_ixs)
     plt.show()
@@ -597,7 +644,7 @@ def remove_low_t(fish, indices=None, peak_cutoff=100):
     return good_rois
 
 
-def plot_t_distribution(row, indices, peak_cutoff=100):
+def plot_t_distribution(row, indices, peak_cutoff=100, exp_name=None):
     """
     Plot a histogram of peak fluorescence values (t.max()) for the selected ROIs,
     including only those peaks below `peak_cutoff`. Reports how many neurons fall below the cutoff.
@@ -611,6 +658,8 @@ def plot_t_distribution(row, indices, peak_cutoff=100):
     peak_cutoff : float, default 100
         Threshold on peak fluorescence; the function reports how many ROIs have
         `t.max() < peak_cutoff`.
+    exp_name : str, optional
+        Experiment folder name (or other label) to display in the plot title.
     """
     temporal = row.cnmf.get_temporal('good')[indices]
     
@@ -625,8 +674,84 @@ def plot_t_distribution(row, indices, peak_cutoff=100):
     ax.hist(peak_vals_below, bins=30)
     ax.set_xlabel('Peak fluorescence (t.max())')
     ax.set_ylabel('Number of neurons')
-    ax.set_title(f"{row.item_name}: Peaks < {peak_cutoff} (n={n_below})")
+    title = f"{row.item_name}: Peaks < {peak_cutoff} (n={n_below})"
+    if exp_name is not None:
+        title = f"{exp_name}\n" + title
+    ax.set_title(title)
     ax.legend()
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_med_t_distribution(row, indices, median_cutoff=100, exp_name=None, xlim=None):
+    """
+    Plot a histogram of median temporal fluorescence values (np.median(t)) for the selected ROIs,
+    including only those medians below `median_cutoff`. Reports how many neurons fall below the cutoff.
+
+    Parameters
+    ----------
+    row : pandas.Series
+        Mesmerize batch row containing CNMF outputs for a plane (expects `row.cnmf`).
+    indices : array-like
+        Indices of ROIs to include (relative to the CNMF "good" set).
+    median_cutoff : float, default 100
+        Threshold on median fluorescence; the function reports how many ROIs have
+        median(t) < median_cutoff.
+    exp_name : str, optional
+        Experiment folder name (or other label) to display in the plot title.
+    xlim : tuple, optional
+        (x_min, x_max) to set the x-axis range, e.g. (0, 50) to view median(t) from 0 to 50.
+    """
+    temporal = row.cnmf.get_temporal('good')[indices]
+
+    # Collect median values per ROI
+    median_vals = np.array([np.median(t) for t in temporal], dtype=float)
+    n_below = int(np.sum(median_vals < median_cutoff))
+
+    # Histogram: x-axis = median values (below cutoff), y-axis = number of neurons (ROIs)
+    fig = plt.figure(figsize=(8, 3))
+    ax = plt.gca()
+    median_vals_below = median_vals[median_vals < median_cutoff]
+    ax.hist(median_vals_below, bins=30)
+    ax.set_xlabel('Median fluorescence (median(t))')
+    ax.set_ylabel('Number of neurons')
+    if xlim is not None:
+        ax.set_xlim(xlim)
+    title = f"{row.item_name}: Median < {median_cutoff} (n={n_below})"
+    if exp_name is not None:
+        title = f"{exp_name}\n" + title
+    ax.set_title(title)
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_min_t_distribution(row, indices, exp_name=None):
+    """
+    Plot a histogram of minimum temporal fluorescence values (t.min()) for the selected ROIs.
+
+    Parameters
+    ----------
+    row : pandas.Series
+        Mesmerize batch row containing CNMF outputs for a plane (expects `row.cnmf`).
+    indices : array-like
+        Indices of ROIs to include (relative to the CNMF "good" set).
+    exp_name : str, optional
+        Experiment folder name (or other label) to display in the plot title.
+    """
+    temporal = row.cnmf.get_temporal('good')[indices]
+
+    # Collect minimum values per ROI
+    min_vals = np.array([t.min() for t in temporal], dtype=float)
+
+    fig = plt.figure(figsize=(8, 3))
+    ax = plt.gca()
+    ax.hist(min_vals, bins=30)
+    ax.set_xlabel('Minimum fluorescence (t.min())')
+    ax.set_ylabel('Number of neurons')
+    title = f"{row.item_name}: Min (n={len(min_vals)})"
+    if exp_name is not None:
+        title = f"{exp_name}\n" + title
+    ax.set_title(title)
     plt.tight_layout()
     plt.show()
 
@@ -634,15 +759,18 @@ def plot_t_distribution(row, indices, peak_cutoff=100):
 def remove_close_dist(fish, indices=None, dist_cutoff=100):
     '''Removes components with a com within the dist_cutoff of another component
     Removes the com with the lowest temporal peak value'''
-    mes_df = uuid_to_plane(load_mesmerize(fish))
+    mes_df = sort_mesmerize_by_plane_and_save(fish)
     cnmf_df = mes_df[mes_df.algo == 'cnmf'].reset_index()
 
     good_rois = dict()
 
-    fig = plt.figure(figsize=(10, 20), constrained_layout=True)
+    row_h = max(4, 3.5 * len(cnmf_df))
+    fig = plt.figure(figsize=(12, row_h), constrained_layout=True)
+    fig.suptitle(Path(fish.exp_path).name, fontsize=14)
     gs = fig.add_gridspec(len(cnmf_df), 2)
     axs = gs.subplots()
-    
+    scatter_s = 4
+
     for i, row in cnmf_df.iterrows():
         movie = row.caiman.get_input_movie()
         t, y, x = movie.shape
@@ -650,11 +778,9 @@ def remove_close_dist(fish, indices=None, dist_cutoff=100):
         if len(cnmf_df) > 1:
             axs[i, 0].imshow(movie[0])
             axs[i, 1].imshow(movie[0])
-            axs[i, 0].set_title(f'{row.item_name}: Before')
         else:
             axs[0].imshow(movie[0])
             axs[1].imshow(movie[0])
-            axs[0].set_title(f'{row.item_name}: Before')
 
         _, coms = row.cnmf.get_contours('good', swap_dim=False)
         coms = np.array(coms)
@@ -664,6 +790,11 @@ def remove_close_dist(fish, indices=None, dist_cutoff=100):
             ixs = np.arange(coms.shape[0])
         else:
             ixs = indices[row.item_name]
+        
+        if len(cnmf_df) > 1:
+            axs[i, 0].set_title(f'{row.item_name}: Before\n(n={len(ixs)})')
+        else:
+            axs[0].set_title(f'{row.item_name}: Before\n(n={len(ixs)})')
 
         if len(ixs) >= 2:
             res = tree(coms[ixs], metric='euclidean')
@@ -700,15 +831,15 @@ def remove_close_dist(fish, indices=None, dist_cutoff=100):
                 com = coms[ix]
 
                 if len(cnmf_df) > 1:
-                    axs[i, 0].scatter(com[0], com[1])
+                    axs[i, 0].scatter(com[0], com[1], s=scatter_s)
                 else:
-                    axs[0].scatter(com[0], com[1])
+                    axs[0].scatter(com[0], com[1], s=scatter_s)
                 
                 if ix in _ixs:
                     if len(cnmf_df) > 1:
-                        axs[i, 1].scatter(com[0], com[1])
+                        axs[i, 1].scatter(com[0], com[1], s=scatter_s)
                     else:
-                        axs[1].scatter(com[0], com[1])
+                        axs[1].scatter(com[0], com[1], s=scatter_s)
 
             good_rois[row.item_name] = np.array(_ixs)
 
@@ -717,11 +848,11 @@ def remove_close_dist(fish, indices=None, dist_cutoff=100):
                 com = coms[ix]
 
                 if len(cnmf_df) > 1:
-                    axs[i, 0].scatter(com[0], com[1])
-                    axs[i, 1].scatter(com[0], com[1])
+                    axs[i, 0].scatter(com[0], com[1], s=scatter_s)
+                    axs[i, 1].scatter(com[0], com[1], s=scatter_s)
                 else:
-                    axs[0].scatter(com[0], com[1])
-                    axs[1].scatter(com[0], com[1])
+                    axs[0].scatter(com[0], com[1], s=scatter_s)
+                    axs[1].scatter(com[0], com[1], s=scatter_s)
             
             good_rois[row.item_name] = np.array(ixs)
 
@@ -730,18 +861,125 @@ def remove_close_dist(fish, indices=None, dist_cutoff=100):
             axs[i, 0].set_ylim([y, 0])
             axs[i, 1].set_xlim([0, x])
             axs[i, 1].set_ylim([y, 0])
-            axs[i, 1].set_title(f'{row.item_name}: After dist_cutoff')
+            axs[i, 1].set_title(f'{row.item_name}: After dist_cutoff\n(n={len(_ixs)})')
         else:
             axs[0].set_xlim([0, x])
             axs[0].set_ylim([y, 0])
             axs[1].set_xlim([0, x])
             axs[1].set_ylim([y, 0])
-            axs[1].set_title(f'{row.item_name}: After dist_cutoff')
+            axs[1].set_title(f'{row.item_name}: After dist_cutoff\n(n={len(_ixs)})')
 
     plt.show()
 
     params = load_params(fish)
     params['dist_cutoff'] = dist_cutoff
+    save_params(fish, params)
+
+    return good_rois
+
+
+def remove_high_med_t(fish, indices=None, median_cutoff=5000):
+    """Remove ROIs with median fluorescence above median_cutoff (e.g. skin).
+    Keeps ROIs with median <= median_cutoff. Saves and plots the removed ROIs so you can
+    confirm no important non-skin ROIs are discarded."""
+    mes_df = sort_mesmerize_by_plane_and_save(fish)
+    cnmf_df = mes_df[mes_df.algo == 'cnmf'].reset_index()
+
+    good_rois = dict()
+    removed_rois = dict()
+
+    # Larger subplots (scale with number of planes), small fixed dot size
+    row_h = max(4, 3.5 * len(cnmf_df))
+    fig = plt.figure(figsize=(18, row_h), constrained_layout=True)
+    fig.suptitle(Path(fish.exp_path).name, fontsize=14)
+    gs = fig.add_gridspec(len(cnmf_df), 3)
+    axs = gs.subplots()
+    scatter_s = 4  # fixed size in points so dots stay small when subplot is enlarged
+
+    for i, row in cnmf_df.iterrows():
+        movie = row.caiman.get_input_movie()
+        t, y, x = movie.shape
+
+        if len(cnmf_df) > 1:
+            axs[i, 0].imshow(movie[0])
+            axs[i, 1].imshow(movie[0])
+            axs[i, 2].imshow(movie[0])
+        else:
+            axs[0].imshow(movie[0])
+            axs[1].imshow(movie[0])
+            axs[2].imshow(movie[0])
+
+        _, coms = row.cnmf.get_contours('good', swap_dim=False)
+        coms = np.array(coms)
+        temporal = row.cnmf.get_temporal('good')
+
+        if indices is None:
+            ixs = np.arange(coms.shape[0])
+        else:
+            ixs = indices[row.item_name]
+
+        # Median fluorescence per ROI (over time); remove high median (e.g. skin), keep median <= median_cutoff
+        median_vals = np.array([np.median(temporal[ix]) for ix in ixs], dtype=float)
+        to_remove = median_vals > median_cutoff
+        removed_ixs = np.array(ixs)[to_remove]
+        kept_ixs = np.array(ixs)[~to_remove]
+
+        if len(cnmf_df) > 1:
+            axs[i, 0].set_title(f'{row.item_name}: Before\n(n={len(ixs)})')
+            axs[i, 1].set_title(f'{row.item_name}: After\n(n={len(kept_ixs)})')
+            axs[i, 2].set_title(f'{row.item_name}: Removed (median > {median_cutoff})\n(n={len(removed_ixs)})')
+        else:
+            axs[0].set_title(f'{row.item_name}: Before\n(n={len(ixs)})')
+            axs[1].set_title(f'{row.item_name}: After\n(n={len(kept_ixs)})')
+            axs[2].set_title(f'{row.item_name}: Removed (median > {median_cutoff})\n(n={len(removed_ixs)})')
+
+        # Column 0: all current ROIs (before)
+        for ix in ixs:
+            com = coms[ix]
+            if len(cnmf_df) > 1:
+                axs[i, 0].scatter(com[0], com[1], s=scatter_s)
+            else:
+                axs[0].scatter(com[0], com[1], s=scatter_s)
+
+        # Column 1: kept ROIs (after)
+        for ix in kept_ixs:
+            com = coms[ix]
+            if len(cnmf_df) > 1:
+                axs[i, 1].scatter(com[0], com[1], s=scatter_s)
+            else:
+                axs[1].scatter(com[0], com[1], s=scatter_s)
+
+        # Column 2: removed ROIs
+        for ix in removed_ixs:
+            com = coms[ix]
+            if len(cnmf_df) > 1:
+                axs[i, 2].scatter(com[0], com[1], s=scatter_s)
+            else:
+                axs[2].scatter(com[0], com[1], s=scatter_s)
+
+        if len(cnmf_df) > 1:
+            axs[i, 0].set_xlim([0, x])
+            axs[i, 0].set_ylim([y, 0])
+            axs[i, 1].set_xlim([0, x])
+            axs[i, 1].set_ylim([y, 0])
+            axs[i, 2].set_xlim([0, x])
+            axs[i, 2].set_ylim([y, 0])
+        else:
+            axs[0].set_xlim([0, x])
+            axs[0].set_ylim([y, 0])
+            axs[1].set_xlim([0, x])
+            axs[1].set_ylim([y, 0])
+            axs[2].set_xlim([0, x])
+            axs[2].set_ylim([y, 0])
+
+        good_rois[row.item_name] = kept_ixs
+        removed_rois[row.item_name] = removed_ixs
+
+    plt.show()
+
+    params = load_params(fish)
+    params['median_cutoff'] = median_cutoff
+    params['removed_high_med_t'] = removed_rois
     save_params(fish, params)
 
     return good_rois
@@ -756,6 +994,7 @@ def save_rois(fish, _rois):
 
     path = fish.data_paths['mesmerize'].joinpath('final_rois.pickle')
     save_pickle(rois, path)
+    print(f"Final ROIs saved for {Path(fish.exp_path).name} -> {path}")
 
 
 def load_rois(fish):
