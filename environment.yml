@@ -73,7 +73,7 @@ dependencies:
       - qtpy==2.3.1
       - seaborn==0.13.2
       - slicetca==1.0.4
-      - tensortools==0.3
+      - tensortools==0.4
       - torch==2.4.1
       - torchaudio==2.4.1
       - torchsde==0.2.6
