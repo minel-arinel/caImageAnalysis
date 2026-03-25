@@ -3,9 +3,191 @@ import os
 import pandas as pd
 from pathlib import Path
 import re
+from typing import Any, Dict, Tuple, Union
+
+import h5py
 
 from caImageAnalysis import BrukerFish
 from caImageAnalysis.temporal_new import *
+
+
+# --- Temporal pack HDF5 (one file: metadata group + 4 (n_rois, T) trace datasets) ---
+
+
+def build_roi_long_df_from_fish(fish: Any, recompute_temporal: bool = False) -> pd.DataFrame:
+    """
+    One row per ROI for a single BrukerFish (plane loop unrolled).
+
+    Columns: fish, age, stimulus, concentration, plane, region, roi_index,
+             temporal, raw_temporal, norm_temporal, raw_norm_temporal, pulse_frames
+    """
+    if recompute_temporal or "temporal" not in fish.data_paths:
+        fish.save_temporal()
+        fish.normalize_temporaldf()
+        df_plane = fish.add_coms_to_temporaldf()
+    else:
+        df_plane = fish.temporal_df.copy()
+
+    fish_id = fish.fish_id
+    age = int(fish.age)
+    try:
+        stimulus = str(fish.stimulus)
+    except AttributeError:
+        stimulus = None
+    try:
+        concentration = float(fish.concentration[:-2])
+    except ValueError:
+        concentration = float(fish.concentration[:-4])
+    except AttributeError:
+        concentration = None
+    region = str(fish.data_paths["raw"].name[: fish.data_paths["raw"].name.rfind("-")])
+
+    rows = []
+    for _, row in df_plane.iterrows():
+        plane = row["plane"]
+        temps = row["temporal"]
+        raw_temps = row["raw_temporal"]
+        norm_temps = row.get("norm_temporal")
+        raw_norm_temps = row.get("raw_norm_temporal")
+        roi_idx_list = row["roi_indices"]
+        pulse_frames = row["pulse_frames"]
+        n = len(temps)
+        for j in range(n):
+            t = np.asarray(temps[j], dtype=np.float32)
+            rt = np.asarray(raw_temps[j], dtype=np.float32)
+            if norm_temps is not None and j < len(norm_temps) and norm_temps[j] is not None:
+                nt = np.asarray(norm_temps[j], dtype=np.float32)
+            else:
+                nt = np.zeros_like(t)
+            if raw_norm_temps is not None and j < len(raw_norm_temps) and raw_norm_temps[j] is not None:
+                rnt = np.asarray(raw_norm_temps[j], dtype=np.float32)
+            else:
+                rnt = np.zeros_like(t)
+            rows.append(
+                {
+                    "fish": fish_id,
+                    "age": age,
+                    "stimulus": stimulus,
+                    "concentration": concentration,
+                    "plane": int(plane),
+                    "region": region,
+                    "roi_index": int(roi_idx_list[j]),
+                    "temporal": t,
+                    "raw_temporal": rt,
+                    "norm_temporal": nt,
+                    "raw_norm_temporal": rnt,
+                    "pulse_frames": pulse_frames,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def save_temporal_pack_hdf5(df: pd.DataFrame, out_path: Union[str, Path]) -> Path:
+    """
+    Write one HDF5 file with metadata group and four (n_rois, T) float32 datasets.
+
+    Layout:
+      /metadata/{fish, age, stimulus, concentration, plane, region, roi_index, pulse_frames}
+      /temporal, /raw_temporal, /norm_temporal, /raw_norm_temporal
+    """
+    out_path = Path(out_path)
+    df = df.reset_index(drop=True)
+    n = len(df)
+    trace_cols = ["temporal", "raw_temporal", "norm_temporal", "raw_norm_temporal"]
+
+    if n == 0:
+        raise ValueError("DataFrame is empty; nothing to save.")
+
+    T = int(np.asarray(df[trace_cols[0]].iloc[0]).shape[0])
+    for c in trace_cols:
+        if int(np.asarray(df[c].iloc[0]).shape[0]) != T:
+            raise ValueError(f"All traces must have length {T}; mismatch in column {c}")
+
+    pf_col = "pulse_frames" if "pulse_frames" in df.columns else "pulse frames"
+
+    with h5py.File(out_path, "w") as f:
+        g = f.create_group("metadata")
+
+        g.create_dataset("fish", data=df["fish"].to_numpy(dtype=np.int32))
+        g.create_dataset("age", data=df["age"].to_numpy(dtype=np.int32))
+
+        str_dt = h5py.string_dtype(encoding="utf-8")
+        stim = df["stimulus"].astype("string").fillna("").to_numpy(dtype=object)
+        g.create_dataset("stimulus", data=stim, dtype=str_dt)
+
+        conc = pd.to_numeric(df["concentration"], errors="coerce").to_numpy(dtype=np.float32)
+        g.create_dataset("concentration", data=conc)
+
+        g.create_dataset("plane", data=df["plane"].to_numpy(dtype=np.int32))
+
+        reg = df["region"].astype("string").fillna("").to_numpy(dtype=object)
+        g.create_dataset("region", data=reg, dtype=str_dt)
+
+        g.create_dataset("roi_index", data=df["roi_index"].to_numpy(dtype=np.int32))
+
+        vlen_i32 = h5py.vlen_dtype(np.dtype("int32"))
+        d_pf = g.create_dataset("pulse_frames", shape=(n,), dtype=vlen_i32)
+        for i in range(n):
+            pf = df[pf_col].iloc[i]
+            if pf is None or (isinstance(pf, float) and np.isnan(pf)):
+                d_pf[i] = np.array([], dtype=np.int32)
+            else:
+                d_pf[i] = np.asarray(pf, dtype=np.int32).ravel()
+
+        for name in trace_cols:
+            X = np.stack(
+                [np.asarray(df[name].iloc[i], dtype=np.float32) for i in range(n)],
+                axis=0,
+            )
+            assert X.shape == (n, T)
+            f.create_dataset(name, data=X, compression="gzip", compression_opts=4)
+
+        f.attrs["T"] = T
+        f.attrs["n_rois"] = n
+
+    return out_path
+
+
+def load_temporal_pack_hdf5(path: Union[str, Path]) -> Tuple[pd.DataFrame, Dict[str, np.ndarray]]:
+    """Load temporal_pack.h5. Returns (metadata DataFrame, dict of trace arrays)."""
+    path = Path(path)
+    with h5py.File(path, "r") as f:
+        g = f["metadata"]
+        meta = pd.DataFrame(
+            {
+                "fish": g["fish"][:],
+                "age": g["age"][:],
+                "stimulus": g["stimulus"].asstr()[:],
+                "concentration": g["concentration"][:],
+                "plane": g["plane"][:],
+                "region": g["region"].asstr()[:],
+                "roi_index": g["roi_index"][:],
+                "pulse_frames": [np.array(x, copy=True) for x in g["pulse_frames"]],
+            }
+        )
+        traces = {
+            k: np.array(f[k][:], copy=True)
+            for k in ["temporal", "raw_temporal", "norm_temporal", "raw_norm_temporal"]
+        }
+    return meta, traces
+
+
+def long_df_from_pack(meta: pd.DataFrame, traces: Dict[str, np.ndarray]) -> pd.DataFrame:
+    """Rebuild a long-format DataFrame (one ROI per row) from pack components."""
+    n = len(meta)
+    rows = []
+    for i in range(n):
+        rows.append(
+            {
+                **{c: meta.iloc[i][c] for c in meta.columns},
+                "temporal": traces["temporal"][i],
+                "raw_temporal": traces["raw_temporal"][i],
+                "norm_temporal": traces["norm_temporal"][i],
+                "raw_norm_temporal": traces["raw_norm_temporal"][i],
+            }
+        )
+    return pd.DataFrame(rows)
+
 
 class BrukerTank():
     def __init__(self, folder_path, fish_ids, prefix='elavl3H2BGCaMP', load_fish=False, region=''):
@@ -30,6 +212,8 @@ class BrukerTank():
                 elif entry.name == 'temporal.h5':
                     self.data_paths['temporal'] = Path(entry.path)
                     self.temporal_df = pd.read_hdf(entry.path)
+                elif entry.name == 'temporal_pack.h5':
+                    self.data_paths['temporal_pack'] = Path(entry.path)
                 elif entry.name == 'unrolled_temporal.h5':
                     self.data_paths['unrolled_temporal'] = Path(entry.path)
                     self.unrolled_df = pd.read_hdf(entry.path)
@@ -58,7 +242,58 @@ class BrukerTank():
                         pass
 
         self.fps = np.mean([fish.fps for fish in self.fish])
-                        
+
+    def save_tank_temporal_pack(
+        self,
+        out_filename="temporal_pack.h5",
+        overwrite=False,
+        sort_fish_by_id=True,
+    ):
+        """
+        Build one ROI-per-row dataframe for all fish, then save a single HDF5 file:
+
+          /metadata/{fish, age, stimulus, concentration, plane, region, roi_index, pulse_frames}
+          /temporal, /raw_temporal, /norm_temporal, /raw_norm_temporal  (n_rois, T) float32
+
+        All traces must share the same length T (asserted before write).
+
+        Sets ``self.temporal_df`` to the long-format DataFrame and registers
+        ``self.data_paths['temporal_pack']``.
+
+        Parameters
+        ----------
+        out_filename : str
+            Written under ``self.folder_path``.
+        overwrite : bool
+            If True, recompute each fish's per-plane temporal.h5 before unrolling.
+        sort_fish_by_id : bool
+            If True, process fish in ascending ``fish_id`` order (recommended).
+        """
+        if len(self.fish) == 0:
+            self.load_fish()
+
+        fish_list = sorted(self.fish, key=lambda f: f.fish_id) if sort_fish_by_id else list(self.fish)
+
+        parts = []
+        for fish in fish_list:
+            if overwrite or "temporal" not in fish.data_paths:
+                fish.save_temporal()
+                fish.normalize_temporaldf()
+                fish.add_coms_to_temporaldf()
+                print(f"saved {fish.exp_path.name}")
+
+            df_long = build_roi_long_df_from_fish(fish, recompute_temporal=False)
+            parts.append(df_long)
+
+        long_df = pd.concat(parts, ignore_index=True)
+        out_path = self.folder_path.joinpath(out_filename)
+        save_temporal_pack_hdf5(long_df, out_path)
+
+        self.temporal_df = long_df
+        self.data_paths["temporal_pack"] = out_path
+        print(f"saved temporal pack: {out_path} (n_rois={len(long_df)})")
+        return out_path
+
     def save_tank_temporal(self, overwrite=False):
         '''Saves the temporal components of final ROIs from all fish as a temporal.h5 file
         Also calculates the dF/F0 and adds it to the dataframe
@@ -100,9 +335,56 @@ class BrukerTank():
             
             df['region'] = str(fish.data_paths['raw'].name[:fish.data_paths['raw'].name.rfind('-')])
 
+            # Debug: per-fish dataframe summary and potentially problematic columns
+            print(f"[BrukerTank.save_tank_temporal] fish {fish.fish_id}: df shape = {df.shape}")
+            for col in ['raw_temporal', 'temporal', 'norm_temporal', 'raw_norm_temporal', 'roi_indices', 'pulse_frames']:
+                if col in df.columns:
+                    try:
+                        lengths = [len(x) if hasattr(x, '__len__') and not isinstance(x, (str, bytes)) else 0 for x in df[col]]
+                        max_len = max(lengths) if lengths else 0
+                        total_len = sum(lengths)
+                        print(f"  col '{col}': n_rows={len(df)}, max_len={max_len}, total_len={total_len}")
+                    except Exception as e:
+                        print(f"  col '{col}': error computing lengths: {e}")
+
             tank_temporal_df.append(df)
 
+        # Combine all fish dataframes
         self.temporal_df = pd.concat(tank_temporal_df).reset_index().drop(columns='index')
+
+        # Debug: combined dataframe summary
+        print(f"[BrukerTank.save_tank_temporal] combined temporal_df shape = {self.temporal_df.shape}")
+        for col in ['raw_temporal', 'temporal', 'norm_temporal', 'raw_norm_temporal', 'roi_indices', 'pulse_frames']:
+            if col in self.temporal_df.columns:
+                try:
+                    lengths = [len(x) if hasattr(x, '__len__') and not isinstance(x, (str, bytes)) else 0 for x in self.temporal_df[col]]
+                    max_len = max(lengths) if lengths else 0
+                    total_len = sum(lengths)
+                    print(f"  combined col '{col}': n_rows={len(self.temporal_df)}, max_len={max_len}, total_len={total_len}")
+                except Exception as e:
+                    print(f"  combined col '{col}': error computing lengths: {e}")
+
+        # Try writing subsets of columns incrementally to identify problematic column(s)
+        base_cols = ['plane', 'fish', 'age', 'stimulus', 'concentration', 'region']
+        path = self.folder_path.joinpath('temporal_debug.h5')
+
+        print("[BrukerTank.save_tank_temporal] Testing HDF5 writes with incremental column subsets")
+        try:
+            self.temporal_df[base_cols].to_hdf(path, key='temporal', mode='w')
+            print("  OK: base_cols only")
+        except Exception as e:
+            print(f"  FAIL: base_cols only -> {e}")
+
+        for col in ['roi_indices', 'raw_temporal', 'temporal', 'norm_temporal', 'raw_norm_temporal', 'pulse_frames']:
+            if col in self.temporal_df.columns:
+                cols = base_cols + [col]
+                try:
+                    self.temporal_df[cols].to_hdf(path, key='temporal', mode='w')
+                    print(f"  OK: base_cols + '{col}'")
+                except Exception as e:
+                    print(f"  FAIL: base_cols + '{col}' -> {e}")
+
+        # Finally, attempt to save full dataframe to the intended file
         self.temporal_df.to_hdf(self.folder_path.joinpath('temporal.h5'), key='temporal')
         print('saved tank temporal_df')
 

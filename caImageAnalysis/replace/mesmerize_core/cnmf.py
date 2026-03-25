@@ -56,8 +56,6 @@ def run_algo(batch_path, uuid, data_path: str = None):
         backend="local", n_processes=n_processes, single_thread=False
     )
 
-    # merge cnmf and eval kwargs into one dict
-    cnmf_params = CNMFParams(params_dict=params["main"])
     # Run CNMF, denote boolean 'success' if CNMF completes w/out error
     try:
         fname_new = cm.save_memmap(

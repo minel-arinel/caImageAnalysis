@@ -555,13 +555,28 @@ class BrukerFish(Fish):
 
                     indices = final_rois[name]
 
-                    raw_temp = row.cnmf.get_temporal("good", add_residuals=True)  # raw temporal responses: C+YrA
+                    # Get denoised temporal responses (C) for "good" components
+                    temp = row.cnmf.get_temporal("good")
+
+                    # Manually construct raw temporal responses as C + YrA using the underlying CNMF object
+                    cnm = row.cnmf.get_output()
+                    est = cnm.estimates
+
+                    if not hasattr(est, "YrA") or not hasattr(est, "idx_components"):
+                        raise RuntimeError(
+                            "CNMF estimates do not expose 'YrA' and/or 'idx_components'. "
+                            "Cannot construct raw temporal traces as C + YrA with this mesmerize/caiman version."
+                        )
+
+                    # YrA and C are stored for all components; select the 'good' ones
+                    YrA_good = est.YrA[est.idx_components]
+                    raw_temp = temp + YrA_good
+
                     raw_temporal.append(raw_temp[indices])
 
                     planes.append(int(plane))
                     roi_indices.append(indices)
-
-                    temp = row.cnmf.get_temporal('good')  # denoised temporal responses: C
+                    
                     temporal.append(temp[indices])
 
                     fts = pd.read_hdf(self.data_paths['volumes'][plane]['frametimes'])
@@ -583,6 +598,19 @@ class BrukerFish(Fish):
                                     'temporal': temporal,
                                     'roi_indices': roi_indices,
                                     'pulse_frames': pulse_frames})
+
+        # Debug: per-fish temporal_df before saving
+        print(f"[Bruker.save_temporal] fish {self.fish_id}: temporal_df shape = {temporal_df.shape}")
+        for col in ['raw_temporal', 'temporal', 'roi_indices', 'pulse_frames']:
+            if col in temporal_df.columns:
+                try:
+                    lengths = [len(x) if hasattr(x, '__len__') and not isinstance(x, (str, bytes)) else 0 for x in temporal_df[col]]
+                    max_len = max(lengths) if lengths else 0
+                    total_len = sum(lengths)
+                    print(f"  col '{col}': n_rows={len(temporal_df)}, max_len={max_len}, total_len={total_len}")
+                except Exception as e:
+                    print(f"  col '{col}': error computing lengths: {e}")
+
         temporal_df.sort_values(by=['plane'], ignore_index=True, inplace=True)
         temporal_df.to_hdf(self.exp_path.joinpath('temporal.h5'), key='temporal')
 
