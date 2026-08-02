@@ -654,7 +654,13 @@ class BrukerFish(Fish):
             _, coms = mes_row.cnmf.get_contours('good', swap_dim=False)  
             coms = np.array(coms)
             coms = coms[row.roi_indices]  # get the accepted components
-            
+            n_t = len(row.temporal)
+            if coms.shape[0] != n_t:
+                raise ValueError(
+                    f"fish {self.fish_id} plane {row.plane}: {n_t} temporal traces but "
+                    f"{coms.shape[0]} COMs after indexing ROIs — each ROI needs one COM."
+                )
+
             self.temporal_df["coms"][i] = coms
 
         self.temporal_df.to_hdf(self.exp_path.joinpath('temporal.h5'), key='temporal')

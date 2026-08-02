@@ -13,13 +13,78 @@ from caImageAnalysis.temporal_new import *
 
 # --- Temporal pack HDF5 (one file: metadata group + 4 (n_rois, T) trace datasets) ---
 
+# Long-format pack: one row per ROI. HDF5 stores traces as root datasets; metadata in /metadata.
+TEMPORAL_PACK_FULL_COLUMNS = [
+    "fish_id",
+    "plane",
+    "neuron",
+    "raw_temporal",
+    "temporal",
+    "raw_norm_temporal",
+    "norm_temporal",
+    "roi_index",
+    "com",
+    "pulse_frames",
+    "age",
+    "stimulus",
+    "concentration",
+    "region",
+]
+TEMPORAL_PACK_META_COLUMNS = [
+    c
+    for c in TEMPORAL_PACK_FULL_COLUMNS
+    if c not in ("raw_temporal", "temporal", "stimulus", "region")
+]
+
+
+def _roi_com_array(coms: Any, j: int) -> np.ndarray:
+    """COM coordinates for ROI slot ``j`` (same order as ``temporal`` / ``roi_indices``)."""
+    if coms is None or (isinstance(coms, float) and np.isnan(coms)):
+        raise ValueError(
+            "Missing COMs for this plane; run BrukerFish.add_coms_to_temporaldf() "
+            "so each ROI has a COM."
+        )
+    if isinstance(coms, (list, tuple)):
+        if j >= len(coms):
+            raise ValueError(
+                f"COM list length {len(coms)} does not include ROI slot {j} "
+                "(each ROI must have a COM)."
+            )
+        out = np.asarray(coms[j], dtype=np.float64).ravel()
+    else:
+        arr = np.asarray(coms)
+        if arr.ndim == 0:
+            raise ValueError("Invalid COM storage (scalar).")
+        if j >= arr.shape[0]:
+            raise ValueError(
+                f"COM array has length {arr.shape[0]} but ROI slot {j} was requested "
+                "(each ROI must have a COM)."
+            )
+        out = np.asarray(arr[j], dtype=np.float64).ravel()
+    if out.size == 0 or np.all(np.isnan(out)):
+        raise ValueError(
+            f"ROI slot {j} has no valid COM coordinates (each ROI must have a COM)."
+        )
+    return out
+
 
 def build_roi_long_df_from_fish(fish: Any, recompute_temporal: bool = False) -> pd.DataFrame:
     """
     One row per ROI for a single BrukerFish (plane loop unrolled).
 
-    Columns: fish, age, stimulus, concentration, plane, region, roi_index,
-             temporal, raw_temporal, norm_temporal, raw_norm_temporal, pulse_frames
+    Columns match TEMPORAL_PACK_FULL_COLUMNS (fish_id, plane, neuron, traces, roi_index, com, …).
+    ``neuron`` is a fish-level index (0 … n_rois-1), matching ``unroll_temporal_df``.
+
+    Each ROI must have a COM (same count and order as traces). Typical pipeline::
+
+        if len(tank.fish) == 0:
+            tank.load_fish()
+        for fish in sorted(tank.fish, key=lambda f: f.fish_id):
+            fish.save_temporal()
+            fish.normalize_temporaldf()
+            fish.add_coms_to_temporaldf()
+
+    ``add_coms_to_temporaldf`` writes plane-level ``coms`` from CNMF ``good`` contours.
     """
     if recompute_temporal or "temporal" not in fish.data_paths:
         fish.save_temporal()
@@ -27,8 +92,12 @@ def build_roi_long_df_from_fish(fish: Any, recompute_temporal: bool = False) -> 
         df_plane = fish.add_coms_to_temporaldf()
     else:
         df_plane = fish.temporal_df.copy()
+        if "coms" not in df_plane.columns:
+            df_plane = fish.add_coms_to_temporaldf()
+        elif df_plane["coms"].isna().any():
+            df_plane = fish.add_coms_to_temporaldf()
 
-    fish_id = fish.fish_id
+    fish_id = int(fish.fish_id)
     age = int(fish.age)
     try:
         stimulus = str(fish.stimulus)
@@ -43,6 +112,7 @@ def build_roi_long_df_from_fish(fish: Any, recompute_temporal: bool = False) -> 
     region = str(fish.data_paths["raw"].name[: fish.data_paths["raw"].name.rfind("-")])
 
     rows = []
+    neuron_count = -1
     for _, row in df_plane.iterrows():
         plane = row["plane"]
         temps = row["temporal"]
@@ -50,9 +120,11 @@ def build_roi_long_df_from_fish(fish: Any, recompute_temporal: bool = False) -> 
         norm_temps = row.get("norm_temporal")
         raw_norm_temps = row.get("raw_norm_temporal")
         roi_idx_list = row["roi_indices"]
+        coms = row["coms"]
         pulse_frames = row["pulse_frames"]
         n = len(temps)
         for j in range(n):
+            neuron_count += 1
             t = np.asarray(temps[j], dtype=np.float32)
             rt = np.asarray(raw_temps[j], dtype=np.float32)
             if norm_temps is not None and j < len(norm_temps) and norm_temps[j] is not None:
@@ -63,23 +135,27 @@ def build_roi_long_df_from_fish(fish: Any, recompute_temporal: bool = False) -> 
                 rnt = np.asarray(raw_norm_temps[j], dtype=np.float32)
             else:
                 rnt = np.zeros_like(t)
+            com_j = _roi_com_array(coms, j)
             rows.append(
                 {
-                    "fish": fish_id,
+                    "fish_id": fish_id,
+                    "plane": int(plane),
+                    "neuron": int(neuron_count),
+                    "raw_temporal": rt,
+                    "temporal": t,
+                    "raw_norm_temporal": rnt,
+                    "norm_temporal": nt,
+                    "roi_index": int(roi_idx_list[j]),
+                    "com": com_j,
+                    "pulse_frames": pulse_frames,
                     "age": age,
                     "stimulus": stimulus,
                     "concentration": concentration,
-                    "plane": int(plane),
                     "region": region,
-                    "roi_index": int(roi_idx_list[j]),
-                    "temporal": t,
-                    "raw_temporal": rt,
-                    "norm_temporal": nt,
-                    "raw_norm_temporal": rnt,
-                    "pulse_frames": pulse_frames,
                 }
             )
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    return df.reindex(columns=TEMPORAL_PACK_FULL_COLUMNS)
 
 
 def save_temporal_pack_hdf5(df: pd.DataFrame, out_path: Union[str, Path]) -> Path:
@@ -87,13 +163,20 @@ def save_temporal_pack_hdf5(df: pd.DataFrame, out_path: Union[str, Path]) -> Pat
     Write one HDF5 file with metadata group and four (n_rois, T) float32 datasets.
 
     Layout:
-      /metadata/{fish, age, stimulus, concentration, plane, region, roi_index, pulse_frames}
+      /metadata/{fish_id, plane, neuron, age, stimulus, concentration, region,
+                 roi_index, com, pulse_frames}
       /temporal, /raw_temporal, /norm_temporal, /raw_norm_temporal
     """
     out_path = Path(out_path)
     df = df.reset_index(drop=True)
     n = len(df)
-    trace_cols = ["temporal", "raw_temporal", "norm_temporal", "raw_norm_temporal"]
+    trace_cols = ["raw_temporal", "temporal", "raw_norm_temporal", "norm_temporal"]
+
+    missing = [c for c in TEMPORAL_PACK_FULL_COLUMNS if c not in df.columns]
+    if missing:
+        raise ValueError(f"temporal pack DataFrame missing columns: {missing}")
+
+    df = df[TEMPORAL_PACK_FULL_COLUMNS]
 
     if n == 0:
         raise ValueError("DataFrame is empty; nothing to save.")
@@ -108,7 +191,9 @@ def save_temporal_pack_hdf5(df: pd.DataFrame, out_path: Union[str, Path]) -> Pat
     with h5py.File(out_path, "w") as f:
         g = f.create_group("metadata")
 
-        g.create_dataset("fish", data=df["fish"].to_numpy(dtype=np.int32))
+        g.create_dataset("fish_id", data=df["fish_id"].to_numpy(dtype=np.int32))
+        g.create_dataset("plane", data=df["plane"].to_numpy(dtype=np.int32))
+        g.create_dataset("neuron", data=df["neuron"].to_numpy(dtype=np.int32))
         g.create_dataset("age", data=df["age"].to_numpy(dtype=np.int32))
 
         str_dt = h5py.string_dtype(encoding="utf-8")
@@ -118,12 +203,15 @@ def save_temporal_pack_hdf5(df: pd.DataFrame, out_path: Union[str, Path]) -> Pat
         conc = pd.to_numeric(df["concentration"], errors="coerce").to_numpy(dtype=np.float32)
         g.create_dataset("concentration", data=conc)
 
-        g.create_dataset("plane", data=df["plane"].to_numpy(dtype=np.int32))
-
         reg = df["region"].astype("string").fillna("").to_numpy(dtype=object)
         g.create_dataset("region", data=reg, dtype=str_dt)
 
         g.create_dataset("roi_index", data=df["roi_index"].to_numpy(dtype=np.int32))
+
+        vlen_f64 = h5py.vlen_dtype(np.dtype("float64"))
+        d_com = g.create_dataset("com", shape=(n,), dtype=vlen_f64)
+        for i in range(n):
+            d_com[i] = np.asarray(df["com"].iloc[i], dtype=np.float64).ravel()
 
         vlen_i32 = h5py.vlen_dtype(np.dtype("int32"))
         d_pf = g.create_dataset("pulse_frames", shape=(n,), dtype=vlen_i32)
@@ -134,6 +222,7 @@ def save_temporal_pack_hdf5(df: pd.DataFrame, out_path: Union[str, Path]) -> Pat
             else:
                 d_pf[i] = np.asarray(pf, dtype=np.int32).ravel()
 
+        # Root datasets: same names as trace columns (matches TEMPORAL_PACK_FULL_COLUMNS)
         for name in trace_cols:
             X = np.stack(
                 [np.asarray(df[name].iloc[i], dtype=np.float32) for i in range(n)],
@@ -149,26 +238,40 @@ def save_temporal_pack_hdf5(df: pd.DataFrame, out_path: Union[str, Path]) -> Pat
 
 
 def load_temporal_pack_hdf5(path: Union[str, Path]) -> Tuple[pd.DataFrame, Dict[str, np.ndarray]]:
-    """Load temporal_pack.h5. Returns (metadata DataFrame, dict of trace arrays)."""
+    """Load temporal_pack.h5. Returns (metadata DataFrame, dict of trace arrays).
+
+    Metadata uses column ``fish_id`` (older files stored ``fish``; that is mapped to ``fish_id``).
+    Older files without ``neuron`` or ``com`` are filled with defaults.
+    """
     path = Path(path)
     with h5py.File(path, "r") as f:
         g = f["metadata"]
+        n = int(g["plane"].shape[0])
+
+        fish_id = g["fish_id"][:] if "fish_id" in g else g["fish"][:]
+        neuron = g["neuron"][:] if "neuron" in g else np.arange(n, dtype=np.int32)
+        if "com" in g:
+            com = [np.array(x, copy=True, dtype=np.float64) for x in g["com"]]
+        else:
+            com = [np.array([], dtype=np.float64) for _ in range(n)]
+
         meta = pd.DataFrame(
             {
-                "fish": g["fish"][:],
+                "fish_id": fish_id,
+                "plane": g["plane"][:],
+                "neuron": neuron,
                 "age": g["age"][:],
                 "stimulus": g["stimulus"].asstr()[:],
                 "concentration": g["concentration"][:],
-                "plane": g["plane"][:],
                 "region": g["region"].asstr()[:],
                 "roi_index": g["roi_index"][:],
+                "com": com,
                 "pulse_frames": [np.array(x, copy=True) for x in g["pulse_frames"]],
             }
         )
-        traces = {
-            k: np.array(f[k][:], copy=True)
-            for k in ["temporal", "raw_temporal", "norm_temporal", "raw_norm_temporal"]
-        }
+
+        trace_keys = ["raw_temporal", "temporal", "raw_norm_temporal", "norm_temporal"]
+        traces = {k: np.array(f[k][:], copy=True) for k in trace_keys}
     return meta, traces
 
 
@@ -179,14 +282,23 @@ def long_df_from_pack(meta: pd.DataFrame, traces: Dict[str, np.ndarray]) -> pd.D
     for i in range(n):
         rows.append(
             {
-                **{c: meta.iloc[i][c] for c in meta.columns},
-                "temporal": traces["temporal"][i],
+                "fish_id": meta.iloc[i]["fish_id"],
+                "plane": meta.iloc[i]["plane"],
+                "neuron": meta.iloc[i]["neuron"],
                 "raw_temporal": traces["raw_temporal"][i],
-                "norm_temporal": traces["norm_temporal"][i],
+                "temporal": traces["temporal"][i],
                 "raw_norm_temporal": traces["raw_norm_temporal"][i],
+                "norm_temporal": traces["norm_temporal"][i],
+                "roi_index": meta.iloc[i]["roi_index"],
+                "com": meta.iloc[i]["com"],
+                "pulse_frames": meta.iloc[i]["pulse_frames"],
+                "age": meta.iloc[i]["age"],
+                "stimulus": meta.iloc[i]["stimulus"],
+                "concentration": meta.iloc[i]["concentration"],
+                "region": meta.iloc[i]["region"],
             }
         )
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows).reindex(columns=TEMPORAL_PACK_FULL_COLUMNS)
 
 
 class BrukerTank():
@@ -252,13 +364,16 @@ class BrukerTank():
         """
         Build one ROI-per-row dataframe for all fish, then save a single HDF5 file:
 
-          /metadata/{fish, age, stimulus, concentration, plane, region, roi_index, pulse_frames}
-          /temporal, /raw_temporal, /norm_temporal, /raw_norm_temporal  (n_rois, T) float32
+          /metadata/{fish_id, plane, neuron, age, stimulus, concentration, region,
+                     roi_index, com, pulse_frames}
+          /raw_temporal, /temporal, /raw_norm_temporal, /norm_temporal  (n_rois, T) float32
 
         All traces must share the same length T (asserted before write).
 
-        Sets ``self.temporal_df`` to the long-format DataFrame and registers
-        ``self.data_paths['temporal_pack']``.
+        Sets ``self.temporal_df`` to the long-format DataFrame (columns
+        ``TEMPORAL_PACK_FULL_COLUMNS``), ``self.temporal_pack_meta_df`` to the
+        same rows without raw/temporal traces and without stimulus/region, and
+        registers ``self.data_paths['temporal_pack']``.
 
         Parameters
         ----------
@@ -286,10 +401,12 @@ class BrukerTank():
             parts.append(df_long)
 
         long_df = pd.concat(parts, ignore_index=True)
+        long_df = long_df.reindex(columns=TEMPORAL_PACK_FULL_COLUMNS)
         out_path = self.folder_path.joinpath(out_filename)
         save_temporal_pack_hdf5(long_df, out_path)
 
         self.temporal_df = long_df
+        self.temporal_pack_meta_df = long_df[TEMPORAL_PACK_META_COLUMNS].copy()
         self.data_paths["temporal_pack"] = out_path
         print(f"saved temporal pack: {out_path} (n_rois={len(long_df)})")
         return out_path
@@ -436,12 +553,22 @@ class BrukerTank():
             if not os.path.exists(save_path):
                 os.mkdir(save_path)
 
+        id_col = "fish_id" if "fish_id" in self.temporal_df.columns else "fish"
+
         for fish in self.fish_ids:
             traces = list()
-            fish_df = self.temporal_df[self.temporal_df.fish == fish]
+            fish_df = self.temporal_df[self.temporal_df[id_col] == fish]
 
-            for _, row in fish_df.iterrows():
-                traces.extend(row['norm_temporal'])
+            if fish_df.empty:
+                continue
+
+            sample_nt = fish_df.iloc[0]["norm_temporal"]
+            if isinstance(sample_nt, np.ndarray) and sample_nt.ndim == 1:
+                for _, row in fish_df.iterrows():
+                    traces.append(row["norm_temporal"])
+            else:
+                for _, row in fish_df.iterrows():
+                    traces.extend(row["norm_temporal"])
 
             if sort:
                 data = sort_by_peak(np.vstack(traces))
@@ -454,7 +581,10 @@ class BrukerTank():
             else:
                 plot_heatmap(data, fps=self.fps, tick_interval=tick_interval)
 
-            plt.title(f"Fish {fish} - {fish_df.iloc[0, 13]} - {fish_df.iloc[0, 15]}")
+            r0 = fish_df.iloc[0]
+            stim = r0["stimulus"] if "stimulus" in fish_df.columns else ""
+            reg = r0["region"] if "region" in fish_df.columns else ""
+            plt.title(f"Fish {fish} - {stim} - {reg}")
 
             if savefig:
                 plt.savefig(save_path.joinpath(f"heatmap_fish{fish}.pdf"), transparent=True)

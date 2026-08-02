@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"from caImageAnalysis.utils import calculate_fps; print\\(calculate_fps\\(''/Volumes/Kobi/DOI_animals_good/elavl3H2BGCaMP6s_9dpf_DOI_50ugml_15_20250925/img_stack_0/frametimes.h5''\\)\\)\")",
+      "Bash(python -c \":*)",
+      "Bash(for f:*)",
+      "Bash(do echo:*)",
+      "Read(//Users/elysiaye/caImageAnalysis/**)",
+      "Bash(done)"
+    ]
+  }
+}
